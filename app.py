@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, render_template, request, redirect, session
 from flask_mysqldb import MySQL
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -22,7 +22,6 @@ app.config['MYSQL_HOST'] = os.getenv("MYSQL_HOST")
 app.config['MYSQL_USER'] = os.getenv("MYSQL_USER")
 app.config['MYSQL_PASSWORD'] = os.getenv("MYSQL_PASSWORD")
 app.config['MYSQL_DB'] = os.getenv("MYSQL_DB")
-
 # =========================
 # JWT CONFIG
 # =========================
@@ -169,6 +168,123 @@ def get_tips():
 
     return jsonify(tips)
 
+# =====================================================
+# CRUD TIPS ADMIN
+# =====================================================
+@app.route('/add-tip', methods=['GET', 'POST'])
+def add_tip():
+
+    if request.method == 'POST':
+
+        title = request.form['title']
+        description = request.form['description']
+        icon = request.form['icon']
+
+        cur = mysql.connection.cursor()
+
+        cur.execute("""
+            INSERT INTO tips (title, description, icon)
+            VALUES (%s, %s, %s)
+        """, (title, description, icon))
+
+        mysql.connection.commit()
+        cur.close()
+
+        return redirect('/dashboard')
+
+    return render_template('add_tip.html')
+
+# dashboard 
+
+@app.route('/dashboard')
+def dashboard():
+
+    cur = mysql.connection.cursor()
+
+    cur.execute("SELECT * FROM tips")
+
+    tips = cur.fetchall()
+
+    cur.close()
+
+    return render_template('dashboard.html', tips=tips)
+
+
+@app.route('/edit-tip/<int:id>', methods=['GET', 'POST'])
+def edit_tip(id):
+
+    cur = mysql.connection.cursor()
+
+    if request.method == 'POST':
+
+        title = request.form['title']
+        description = request.form['description']
+        icon = request.form['icon']
+
+        cur.execute("""
+            UPDATE tips
+            SET title=%s, description=%s, icon=%s
+            WHERE id=%s
+        """, (title, description, icon, id))
+
+        mysql.connection.commit()
+        cur.close()
+
+        return redirect('/dashboard')
+
+    cur.execute("SELECT * FROM tips WHERE id=%s", (id,))
+    tip = cur.fetchone()
+
+    cur.close()
+
+    return render_template('edit_tip.html', tip=tip)
+
+
+@app.route('/delete-tip/<int:id>')
+def delete_tip(id):
+
+    cur = mysql.connection.cursor()
+
+    cur.execute("DELETE FROM tips WHERE id=%s", (id,))
+
+    mysql.connection.commit()
+
+    cur.close()
+
+    return redirect('/dashboard')
+
+
+@app.route('/')
+def index():
+    return redirect('/loginadmin')
+
+@app.route('/loginadmin', methods=['GET', 'POST'])
+def login_admin():
+
+    if request.method == 'POST':
+
+        username = request.form['username']
+        password = request.form['password']
+
+        cur = mysql.connection.cursor()
+
+        cur.execute("""
+            SELECT * FROM admins
+            WHERE username=%s AND password=%s
+        """, (username, password))
+
+        admin = cur.fetchone()
+        cur.close()
+
+        if admin:
+
+            session['admin'] = username
+
+            return redirect('/dashboard')
+
+        return "Login gagal"
+
+    return render_template('login.html')
 # =====================================================
 # RUN
 # =====================================================

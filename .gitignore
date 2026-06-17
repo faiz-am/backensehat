@@ -3,4 +3,6 @@ __pycache__/
 .env
 venv/
 instance/
+sehatkita-a5b4e-firebase-adminsdk-fbsvc-2c8c75cfe9.json
 .DS_Store
+firebase.json

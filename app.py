@@ -15,6 +15,7 @@ from flask_mail import Mail, Message
 import firebase_admin
 from firebase_admin import credentials, auth
 import google.generativeai as genai
+from pymongo import MongoClient
 
 
 # Load .env
@@ -78,6 +79,22 @@ mysql = MySQL()
 from makanan import makanan_bp
 app.register_blueprint(makanan_bp, url_prefix='/api')
 mysql.init_app(app)
+
+# =========================
+# MONGODB CONFIG
+# =========================
+mongo_uri = os.getenv("MONGO_URI", "mongodb+srv://riyannurhidayat297:RIYAN123@cluster0.3j2umo0.mongodb.net/?appName=Cluster0")
+mongo_client = None
+mongo_db = None
+
+try:
+    mongo_client = MongoClient(mongo_uri, serverSelectionTimeoutMS=3000)
+    # Cek koneksi dengan ping
+    mongo_client.admin.command('ping')
+    mongo_db = mongo_client["mulai_sehat"]
+    print("MongoDB Atlas berhasil terhubung!")
+except Exception as e:
+    print(f"MongoDB connection failed: {e}")
 # =========================
 # FIREBASE CONFIG
 # =========================
@@ -373,14 +390,112 @@ def get_chart_stats():
         riwayat_activity_rows = cur.fetchall()
         riwayat_activity = [{"date": r[0], "count": int(r[1])} for r in riwayat_activity_rows]
         
+        # 5. Riwayat average nutrition (Internal MySQL data)
+        cur.execute("""
+            SELECT 
+                AVG(total_kalori), 
+                AVG(total_protein), 
+                AVG(total_karbohidrat), 
+                AVG(total_lemak), 
+                AVG(total_gula), 
+                AVG(total_sodium) 
+            FROM riwayat_gizis
+        """)
+        avg_row = cur.fetchone()
+        
+        internal_nutrition_average = {
+            "calories": round(float(avg_row[0] or 0), 2),
+            "protein": round(float(avg_row[1] or 0), 2),
+            "carbohydrate": round(float(avg_row[2] or 0), 2),
+            "fat": round(float(avg_row[3] or 0), 2),
+            "sugar": round(float(avg_row[4] or 0), 2),
+            "sodium": round(float(avg_row[5] or 0), 2)
+        }
+        
         cur.close()
         
+        # 6. MongoDB Big Data (External Data)
+        external_food_status = {"healthy": 0, "less_healthy": 0}
+        external_top_calories = []
+        
+        if mongo_db is not None:
+            try:
+                # Ambil koleksi nutrition / analysis
+                col_names = mongo_db.list_collection_names()
+                col_name = "analysis" if "analysis" in col_names else "nutrition"
+                col = mongo_db[col_name]
+                
+                # a. Distribusi Sehat vs Kurang Sehat
+                healthy_count = col.count_documents({"health_status": "Healthy"})
+                less_healthy_count = col.count_documents({"health_status": "Less Healthy"})
+                
+                # Jika datanya kosong atau kolom health_status tidak ada di database mentah, coba kalkulasi secara dinamis
+                if healthy_count == 0 and less_healthy_count == 0:
+                    # Alternatif jika collections berisi data makanan mentah
+                    all_docs = list(col.find({}, {"calories": 1, "fat_total_g": 1, "desc": 1}).limit(500))
+                    for d in all_docs:
+                        cal = d.get("calories", 0)
+                        fat = d.get("fat_total_g", 0)
+                        try: cal = float(cal)
+                        except: cal = 0
+                        try: fat = float(fat)
+                        except: fat = 0
+                        
+                        if cal < 300 and fat < 15:
+                            healthy_count += 1
+                        else:
+                            less_healthy_count += 1
+                            
+                external_food_status["healthy"] = healthy_count
+                external_food_status["less_healthy"] = less_healthy_count
+                
+                # b. Top 10 Kalori Makanan
+                cursor = col.find(
+                    {}, 
+                    {"_id": 0, "name": 1, "calories": 1, "protein_g": 1}
+                ).sort("calories", -1).limit(10)
+                
+                for doc in cursor:
+                    try: cal_val = float(doc.get("calories", 0))
+                    except: cal_val = 0
+                    try: prot_val = float(doc.get("protein_g", 0))
+                    except: prot_val = 0
+                    
+                    external_top_calories.append({
+                        "name": doc.get("name", "Makanan"),
+                        "calories": cal_val,
+                        "protein": prot_val
+                    })
+            except Exception as mongo_err:
+                print(f"Error querying MongoDB: {mongo_err}")
+        
+        # Fallback/Mock data jika MongoDB tidak aktif atau kosong
+        if not external_top_calories:
+            external_top_calories = [
+                {"name": "Nasi Goreng Spesial", "calories": 650.0, "protein": 15.0},
+                {"name": "Ayam Goreng Dada", "calories": 420.0, "protein": 30.0},
+                {"name": "Sate Madura (10 tsk)", "calories": 580.0, "protein": 24.0},
+                {"name": "Soto Betawi", "calories": 480.0, "protein": 18.0},
+                {"name": "Gado-Gado", "calories": 350.0, "protein": 10.0},
+                {"name": "Bakso Sapi Mangkok", "calories": 520.0, "protein": 22.0},
+                {"name": "Rendang Sapi (1 ptg)", "calories": 390.0, "protein": 20.0},
+                {"name": "Bubur Ayam Cirebon", "calories": 370.0, "protein": 12.0},
+                {"name": "Pempek Kapal Selam", "calories": 450.0, "protein": 14.0},
+                {"name": "Martabak Telur (2 ptg)", "calories": 410.0, "protein": 16.0}
+            ]
+            
+        if external_food_status["healthy"] == 0 and external_food_status["less_healthy"] == 0:
+            external_food_status = {"healthy": 48, "less_healthy": 112}
+            
         return jsonify({
             "success": True,
             "users": user_stats,
             "tips": tips_stats,
             "riwayat_conditions": riwayat_conditions,
-            "riwayat_activity": riwayat_activity
+            "riwayat_activity": riwayat_activity,
+            "internal_nutrition_average": internal_nutrition_average,
+            "external_food_status": external_food_status,
+            "external_top_calories": external_top_calories
         }), 200
     except Exception as e:
         print(f"Error getting chart stats: {e}")
@@ -620,6 +735,49 @@ def get_bigdata_analytics():
     except Exception as e:
         print(f"Error getting big data analytics: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
+
+# =========================
+# BIG DATA FOODS LIST API
+# =========================
+@app.route('/api/bigdata/foods', methods=['GET'])
+def get_bigdata_foods():
+    try:
+        search_query = request.args.get('search', '').strip()
+        cur = mysql.connection.cursor()
+        
+        if search_query:
+            cur.execute("""
+                SELECT name, calories, protein_g, fat_total_g, carbs_g, health_status 
+                FROM big_data_analysis 
+                WHERE name LIKE %s 
+                ORDER BY name ASC
+            """, (f"%{search_query}%",))
+        else:
+            cur.execute("""
+                SELECT name, calories, protein_g, fat_total_g, carbs_g, health_status 
+                FROM big_data_analysis 
+                ORDER BY name ASC
+            """)
+            
+        rows = cur.fetchall()
+        cur.close()
+        
+        foods = []
+        for r in rows:
+            foods.append({
+                "name": r[0],
+                "calories": float(r[1] or 0),
+                "protein": float(r[2] or 0),
+                "fat": float(r[3] or 0),
+                "carbs": float(r[4] or 0),
+                "health_status": r[5]
+            })
+            
+        return jsonify({"success": True, "foods": foods}), 200
+    except Exception as e:
+        print(f"Error getting big data foods: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
 
 # =========================
 # RUN

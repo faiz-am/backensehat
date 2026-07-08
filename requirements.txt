@@ -16,3 +16,5 @@ Flask-Mail
 google-generativeai
 pandas
 requests-oauthlib
+pymongo
+dnspython

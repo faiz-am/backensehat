@@ -1,14 +1,24 @@
 # === Cell 1 ===
-pip install requests requests_oauthlib pymongo pandas matplotlib
+# pip install requests requests_oauthlib pymongo pandas matplotlib
 
 # === Cell 3 ===
+
+# Define display fallback for CLI environment
+try:
+    from IPython.display import display
+except ImportError:
+    display = print
 
 from requests_oauthlib import OAuth1
 import requests
 from pymongo import MongoClient
 import pandas as pd
 import re
-import matplotlib.pyplot as plt
+HAS_MATPLOTLIB = True
+try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    HAS_MATPLOTLIB = False
 
 # === Cell 5 ===
 import requests
@@ -169,34 +179,46 @@ print("\n🔗 Korelasi:")
 print(df[cols].corr())
 
 # === Cell 19 ===
-plt.figure()
-df.sort_values("calories", ascending=False).head(5).plot(
-    x="name", y="calories", kind="bar"
-)
-plt.title("Top 5 Makanan Berdasarkan Kalori")
-plt.xticks(rotation=45)
-plt.tight_layout()
-plt.show()
+if HAS_MATPLOTLIB:
+    try:
+        plt.figure()
+        df.sort_values("calories", ascending=False).head(5).plot(
+            x="name", y="calories", kind="bar"
+        )
+        plt.title("Top 5 Makanan Berdasarkan Kalori")
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.show()
+    except Exception as e:
+        print(f"Bypass plotting error: {e}")
 
 # === Cell 20 ===
-plt.figure()
-df.sort_values("protein_g", ascending=False).head(5).plot(
-    x="name", y="protein_g", kind="bar"
-)
-plt.title("Top 5 Makanan Berdasarkan Protein")
-plt.xticks(rotation=45)
-plt.tight_layout()
-plt.show()
+if HAS_MATPLOTLIB:
+    try:
+        plt.figure()
+        df.sort_values("protein_g", ascending=False).head(5).plot(
+            x="name", y="protein_g", kind="bar"
+        )
+        plt.title("Top 5 Makanan Berdasarkan Protein")
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.show()
+    except Exception as e:
+        print(f"Bypass plotting error: {e}")
 
 # === Cell 21 ===
-plt.figure()
-corr = df[cols].corr()
-plt.imshow(corr)
-plt.colorbar()
-plt.xticks(range(len(cols)), cols, rotation=45)
-plt.yticks(range(len(cols)), cols)
-plt.title("Korelasi Nutrisi")
-plt.show()
+if HAS_MATPLOTLIB:
+    try:
+        plt.figure()
+        corr = df[cols].corr()
+        plt.imshow(corr)
+        plt.colorbar()
+        plt.xticks(range(len(cols)), cols, rotation=45)
+        plt.yticks(range(len(cols)), cols)
+        plt.title("Korelasi Nutrisi")
+        plt.show()
+    except Exception as e:
+        print(f"Bypass plotting error: {e}")
 
 # === Cell 22 ===
 df.to_csv("hasil_nutrisi.csv", index=False)
@@ -221,25 +243,29 @@ print("\n💪 Hasil Analisis:")
 display(df)
 
 # === Cell 26 ===
-df["health_status"].value_counts().plot(kind="bar")
-plt.title("Distribusi Healthy vs Less Healthy")
-plt.show()
-
-# ==========================================
-# TAMBAHAN PIE CHART
-# ==========================================
-plt.figure()
-
-kategori_counts = df["health_status"].value_counts()
-
-plt.pie(
-    kategori_counts,
-    labels=kategori_counts.index,
-    autopct='%1.1f%%'
-)
-
-plt.title("Distribusi Kategori Makanan")
-plt.show()
+if HAS_MATPLOTLIB:
+    try:
+        df["health_status"].value_counts().plot(kind="bar")
+        plt.title("Distribusi Healthy vs Less Healthy")
+        plt.show()
+        
+        # ==========================================
+        # TAMBAHAN PIE CHART
+        # ==========================================
+        plt.figure()
+        
+        kategori_counts = df["health_status"].value_counts()
+        
+        plt.pie(
+            kategori_counts,
+            labels=kategori_counts.index,
+            autopct='%1.1f%%'
+        )
+        
+        plt.title("Distribusi Kategori Makanan")
+        plt.show()
+    except Exception as e:
+        print(f"Bypass plotting error: {e}")
 
 # === Cell 27 ===
 print("\n📊 INSIGHT")

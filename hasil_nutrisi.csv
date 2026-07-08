@@ -1,0 +1,16 @@
+input,name,desc,calories,protein_g,fat_total_g,carbs_g
+rice,White Rice,Per 160g - Calories: 206kcal | Fat: 0.45g | Carbs: 44.50g | Protein: 4.24g,206,4.24,0.45,44.5
+rice,Jasmine Rice,Per 1/2 cup - Calories: 107kcal | Fat: 0.00g | Carbs: 23.00g | Protein: 3.00g,107,3.0,0.0,23.0
+rice,Cooked Rice,Per 100g - Calories: 135kcal | Fat: 1.07g | Carbs: 27.64g | Protein: 2.64g,135,2.64,1.07,27.64
+rice,Basmati Rice,Per 1/4 cup prepared - Calories: 160kcal | Fat: 0.00g | Carbs: 35.00g | Protein: 4.00g,160,4.0,0.0,35.0
+rice,Brown Rice,Per 197g - Calories: 216kcal | Fat: 1.75g | Carbs: 44.76g | Protein: 5.03g,216,5.03,1.75,44.76
+chicken,Chicken Breast,Per 101g - Calories: 197kcal | Fat: 7.79g | Carbs: 0.00g | Protein: 29.80g,197,29.8,7.79,0.0
+chicken,Skinless Chicken Breast,Per 100g - Calories: 110kcal | Fat: 1.24g | Carbs: 0.00g | Protein: 23.09g,110,23.09,1.24,0.0
+chicken,Chicken Thigh,Per 101g - Calories: 247kcal | Fat: 15.49g | Carbs: 0.00g | Protein: 25.06g,247,25.06,15.49,0.0
+chicken,Grilled Chicken,Per 101g - Calories: 239kcal | Fat: 13.60g | Carbs: 0.00g | Protein: 27.30g,239,27.3,13.6,0.0
+chicken,Chicken,Per 101g - Calories: 239kcal | Fat: 13.60g | Carbs: 0.00g | Protein: 27.30g,239,27.3,13.6,0.0
+apple,Apples,Per 100g - Calories: 52kcal | Fat: 0.17g | Carbs: 13.81g | Protein: 0.26g,52,0.26,0.17,13.81
+apple,Honeycrisp Apples,Per 100g - Calories: 52kcal | Fat: 0.17g | Carbs: 13.81g | Protein: 0.26g,52,0.26,0.17,13.81
+apple,Apple,Per 1 apple - Calories: 100kcal | Fat: 0.50g | Carbs: 24.00g | Protein: 0.00g,100,0.0,0.5,24.0
+apple,Gala Apples,Per 99g - Calories: 51kcal | Fat: 0.17g | Carbs: 13.67g | Protein: 0.26g,51,0.26,0.17,13.67
+apple,Fuji Apples,Per 99g - Calories: 51kcal | Fat: 0.17g | Carbs: 13.67g | Protein: 0.26g,51,0.26,0.17,13.67

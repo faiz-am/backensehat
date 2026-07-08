@@ -14,12 +14,40 @@ from flask_jwt_extended import (
 from flask_mail import Mail, Message
 import firebase_admin
 from firebase_admin import credentials, auth
+import google.generativeai as genai
+
 
 # Load .env
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*", "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"], "allow_headers": ["Content-Type", "Authorization"]}})
+
+# =========================
+# GEMINI CHATBOT CONFIG
+# =========================
+gemini_key = os.getenv("GEMINI_API_KEY")
+chatbot_model = None
+if gemini_key and gemini_key != "your_gemini_api_key_here":
+    try:
+        genai.configure(api_key=gemini_key)
+        chatbot_model = genai.GenerativeModel(
+            "gemini-1.5-flash",
+            system_instruction=(
+                "Anda adalah Asisten Kesehatan Sehat Kita, asisten kesehatan interaktif di aplikasi 'Sehat Kita'. "
+                "Tugas Anda adalah membantu menjawab pertanyaan pengguna seputar kesehatan, diet, nutrisi, olahraga, hidrasi, "
+                "dan penggunaan aplikasi Sehat Kita secara ramah, informatif, dan ringkas dalam bahasa Indonesia. "
+                "Gunakan format teks polos (plain text) atau gunakan simbol emoticon/emoji menarik, batasi penggunaan format markdown tebal/list jika tidak diperlukan. "
+                "Berikan jawaban yang praktis dan dukung pengguna untuk hidup lebih sehat."
+            )
+        )
+        print("Gemini AI Chatbot berhasil dikonfigurasi!")
+    except Exception as e:
+        print(f"Gagal mengonfigurasi Gemini: {e}")
+else:
+    print("Warning: GEMINI_API_KEY tidak disetel atau masih bernilai default. Chatbot akan menggunakan fallback rule-based.")
+
+
 
 # =========================
 # MAIL CONFIG
@@ -46,16 +74,27 @@ app.config['MYSQL_DB'] = os.getenv("MYSQL_DB")
 app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET_KEY")
 jwt = JWTManager(app)
 
-mysql = MySQL(app)
-
+mysql = MySQL()
+from makanan import makanan_bp
+app.register_blueprint(makanan_bp, url_prefix='/api')
+mysql.init_app(app)
+# =========================
+# FIREBASE CONFIG
+# =========================
 # =========================
 # FIREBASE CONFIG
 # =========================
 try:
-    cred = credentials.Certificate("firebase.json")
-    firebase_admin.initialize_app(cred)
+    # PERBAIKAN: Cek apakah daftar aplikasi Firebase (_apps) masih kosong
+    if not firebase_admin._apps:
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        firebase_path = os.path.join(backend_dir, "firebase.json")
+        cred = credentials.Certificate(firebase_path)
+        firebase_admin.initialize_app(cred)
+        print("Firebase berhasil diinisialisasi!")
 except Exception as e:
-    print(f"Firebase error: {e}")
+    path_val = firebase_path if 'firebase_path' in locals() else 'None'
+    print(f"Firebase error (path={path_val}): {e}")
 
 # =========================
 # ROOT API
@@ -295,6 +334,59 @@ def get_tips():
     return jsonify(tips)
 
 # =========================
+# GET CHART STATS API (JWT PROTECTED)
+# =========================
+@app.route('/api/admin/chart-stats', methods=['GET'])
+@jwt_required()
+def get_chart_stats():
+    try:
+        cur = mysql.connection.cursor()
+        
+        # 1. User stats (Verified vs Unverified)
+        cur.execute("SELECT is_verified, COUNT(*) FROM users GROUP BY is_verified")
+        user_rows = cur.fetchall()
+        user_stats = {"verified": 0, "unverified": 0}
+        for row in user_rows:
+            if row[0] == 1:
+                user_stats["verified"] = int(row[1])
+            else:
+                user_stats["unverified"] = int(row[1])
+                
+        # 2. Tips stats (Grouped by Icon)
+        cur.execute("SELECT icon, COUNT(*) FROM tips GROUP BY icon")
+        tip_rows = cur.fetchall()
+        tips_stats = {r[0] if r[0] else "default": int(r[1]) for r in tip_rows}
+        
+        # 3. Riwayat stats (Grouped by Condition/Status)
+        cur.execute("SELECT status_kondisi, COUNT(*) FROM riwayat_gizis GROUP BY status_kondisi")
+        riwayat_condition_rows = cur.fetchall()
+        riwayat_conditions = {r[0] if r[0] else "Normal": int(r[1]) for r in riwayat_condition_rows}
+        
+        # 4. Riwayat activity (Grouped by Date for last 7 days)
+        cur.execute("""
+            SELECT DATE_FORMAT(created_at, '%Y-%m-%d') as date, COUNT(*) 
+            FROM riwayat_gizis 
+            GROUP BY DATE(created_at) 
+            ORDER BY date ASC 
+            LIMIT 7
+        """)
+        riwayat_activity_rows = cur.fetchall()
+        riwayat_activity = [{"date": r[0], "count": int(r[1])} for r in riwayat_activity_rows]
+        
+        cur.close()
+        
+        return jsonify({
+            "success": True,
+            "users": user_stats,
+            "tips": tips_stats,
+            "riwayat_conditions": riwayat_conditions,
+            "riwayat_activity": riwayat_activity
+        }), 200
+    except Exception as e:
+        print(f"Error getting chart stats: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+# =========================
 # ADMIN TIPS CRUD API (JWT PROTECTED)
 # =========================
 @app.route('/api/admin/tips', methods=['POST'])
@@ -362,9 +454,175 @@ def delete_tip(tip_id):
     cur.close()
 
     return jsonify({"success": True, "message": "Tip kesehatan berhasil dihapus!"})
+# =========================
+# CHATBOT API
+# =========================
+def get_rule_based_response(message):
+    clean_text = message.lower().strip()
+    if "makanan" in clean_text and ("sehat" in clean_text or "terbaik" in clean_text or "paling" in clean_text):
+        return (
+            "Makanan paling sehat meliputi:\n"
+            "1. 🥬 Sayuran Hijau (bayam, brokoli, kangkung) - kaya serat & zat besi.\n"
+            "2. 🥑 Buah-buahan (alpukat, apel, beri) - kaya vitamin & antioksidan.\n"
+            "3. 🍗 Protein Tanpa Lemak (dada ayam, ikan, tempe, tahu) - membangun jaringan otot.\n"
+            "4. 🫘 Kacang-kacangan & Biji-bijian - sumber lemak sehat omega-3.\n"
+            "5. 🌾 Karbohidrat Kompleks (nasi merah, oatmeal, ubi) - energi tahan lama."
+        )
+    elif "diet" in clean_text or "berat" in clean_text or "turun" in clean_text:
+        return (
+            "Tips menurunkan berat badan secara sehat:\n"
+            "1. 🥗 Lakukan defisit kalori ringan (kurangi 300-500 kalori harian).\n"
+            "2. 🏃‍♂️ Tingkatkan aktivitas fisik / olahraga minimal 150 menit per minggu.\n"
+            "3. 🥩 Penuhi kebutuhan protein agar kenyang lebih lama dan otot terjaga.\n"
+            "4. 💧 Minum air putih sebelum makan.\n"
+            "5. 😴 Tidur cukup 7-8 jam per hari, karena kurang tidur meningkatkan hormon lapar."
+        )
+    elif "gula" in clean_text or "diabetes" in clean_text or "manis" in clean_text:
+        return (
+            "Cara mengontrol kadar gula darah:\n"
+            "1. 🍚 Batasi karbohidrat sederhana (nasi putih berlebih, roti putih).\n"
+            "2. 🍩 Hindari minuman manis, sirup, dan soda.\n"
+            "3. 🥦 Perbanyak makanan tinggi serat (sayuran, kacang-kacangan).\n"
+            "4. 🚶‍♂️ Lakukan jalan kaki 10-15 menit setelah makan.\n"
+            "5. 📊 Pantau asupan gula harian Anda (maksimal 4 sendok makan atau 50 gram sehari)."
+        )
+    elif "garam" in clean_text or "sodium" in clean_text or "natrium" in clean_text or "hipertensi" in clean_text or "tensi" in clean_text:
+        return (
+            "Cara membatasi konsumsi garam (natrium):\n"
+            "1. 🍟 Kurangi makanan cepat saji, camilan asin, dan makanan kalengan.\n"
+            "2. 🌿 Gunakan rempah alami (bawang, ketumbar, lemon) sebagai penyedap rasa pengganti garam.\n"
+            "3. 🥫 Selalu baca label informasi nilai gizi (pilih produk rendah natrium).\n"
+            "4. 🥤 Perbanyak minum air putih untuk membantu tubuh mengeluarkan kelebihan natrium.\n"
+            "5. 🧂 Batasi garam meja maksimal 1 sendok teh (2000mg natrium) per hari."
+        )
+    elif "air" in clean_text or "minum" in clean_text or "gelas" in clean_text or "hidrasi" in clean_text:
+        return (
+            "Pentingnya hidrasi tubuh harian:\n"
+            "1. 💧 Kebutuhan rata-rata orang dewasa adalah 8 gelas atau 2 liter sehari.\n"
+            "2. 🏃‍♂️ Jika Anda berolahraga atau cuaca panas, tambahkan asupan air Anda.\n"
+            "3. 🍋 Manfaat air putih: membuang racun, melancarkan pencernaan, menjaga elastisitas kulit, dan mencegah dehidrasi."
+        )
+    elif "riwayat" in clean_text or "grafik" in clean_text or "perkembangan" in clean_text:
+        return (
+            "Untuk melihat riwayat perkembangan gizi Anda:\n"
+            "1. 📊 Masuk ke menu 'Riwayat' (tab kedua dari bawah).\n"
+            "2. Anda akan melihat daftar riwayat makan pagi, siang, malam beserta status kondisi kesehatan Anda (Normal, Kurang Gizi, atau Obesitas)."
+        )
+    elif "input" in clean_text or "tambah" in clean_text or "catat" in clean_text or "makanan baru" in clean_text:
+        return (
+            "Cara mencatat/menginput makanan baru:\n"
+            "1. ➕ Tekan tab 'Input' (ikon plus di bagian tengah navigasi bawah).\n"
+            "2. Masukkan nama makanan (misal: 'Nasi Goreng').\n"
+            "3. Tentukan waktu makan (Pagi, Siang, atau Malam).\n"
+            "4. Isi jumlah kalori, protein, sodium (garam), dan gula yang Anda konsumsi.\n"
+            "5. Tekan tombol 'Simpan' untuk mencatat ke database."
+        )
+    elif "fitur" in clean_text or "aplikasi" in clean_text or "apa saja" in clean_text:
+        return (
+            "Fitur unggulan di aplikasi Sehat Kita:\n"
+            "1. 🩺 Dashboard Pemantauan - memantau skor kesehatan, kalori harian, gula, dan garam.\n"
+            "2. 📝 Pencatatan Gizi - fitur input makanan harian untuk pagi, siang, dan malam.\n"
+            "3. 📊 Riwayat Gizi - grafik visualisasi riwayat kesehatan Anda.\n"
+            "4. 💡 Tips Kesehatan - tips harian yang diperbarui langsung oleh admin.\n"
+            "5. 💬 Chatbot AI - asisten kesehatan interaktif Anda."
+        )
+    elif any(word in clean_text for word in ["halo", "hai", "pagi", "siang", "sore", "malam", "assalamualaikum"]):
+        return "Halo! 👋 Saya adalah Asisten Kesehatan Sehat Kita. Ada yang bisa saya bantu hari ini tentang tips kesehatan atau pola makan sehat?"
+    elif any(word in clean_text for word in ["terima kasih", "makasih", "thank you"]):
+        return "Sama-sama! 😊 Senang bisa membantu Anda. Selalu jaga kesehatan dan pola makan seimbang ya!"
+    else:
+        return (
+            "Maaf, saya kurang memahami pertanyaan Anda. 😅\n\n"
+            "Coba tanyakan hal-macam berikut:\n"
+            "• 'makanan sehat paling bagus apa saja?'\n"
+            "• 'bagaimana tips diet?'\n"
+            "• 'cara mengontrol gula darah'\n"
+            "• 'berapa kebutuhan air harian?'\n"
+            "• 'bagaimana cara input makanan?'"
+        )
+
+@app.route('/api/chat', methods=['POST'])
+def chat():
+    data = request.get_json()
+    if not data or 'message' not in data:
+        return jsonify({"success": False, "message": "Pesan tidak boleh kosong"}), 400
+    
+    user_message = data['message']
+    
+    if chatbot_model:
+        try:
+            response = chatbot_model.generate_content(user_message)
+            reply = response.text
+            return jsonify({"success": True, "reply": reply.strip()})
+        except Exception as e:
+            print(f"Error calling Gemini API: {e}")
+            reply = get_rule_based_response(user_message)
+            return jsonify({"success": True, "reply": reply})
+    else:
+        reply = get_rule_based_response(user_message)
+        return jsonify({"success": True, "reply": reply})
+
+# =========================
+# BIG DATA ANALYTICS API
+# =========================
+@app.route('/api/bigdata/analytics', methods=['GET'])
+def get_bigdata_analytics():
+    try:
+        cur = mysql.connection.cursor()
+        
+        # 1. Total foods & Health category counts
+        cur.execute("SELECT health_status, COUNT(*) FROM big_data_analysis GROUP BY health_status")
+        rows = cur.fetchall()
+        summary = {
+            "total_foods": 0,
+            "healthy_count": 0,
+            "less_healthy_count": 0,
+            "avg_calories": 0.0,
+            "avg_protein": 0.0,
+            "avg_fat": 0.0,
+            "avg_carbs": 0.0
+        }
+        for r in rows:
+            status = r[0]
+            count = int(r[1])
+            summary["total_foods"] += count
+            if status == "Healthy":
+                summary["healthy_count"] = count
+            elif status == "Less Healthy":
+                summary["less_healthy_count"] = count
+
+        # 2. Averages of nutrients
+        cur.execute("SELECT AVG(calories), AVG(protein_g), AVG(fat_total_g), AVG(carbs_g) FROM big_data_analysis")
+        avg_row = cur.fetchone()
+        if avg_row and summary["total_foods"] > 0:
+            summary["avg_calories"] = round(float(avg_row[0]) if avg_row[0] is not None else 0.0, 2)
+            summary["avg_protein"] = round(float(avg_row[1]) if avg_row[1] is not None else 0.0, 2)
+            summary["avg_fat"] = round(float(avg_row[2]) if avg_row[2] is not None else 0.0, 2)
+            summary["avg_carbs"] = round(float(avg_row[3]) if avg_row[3] is not None else 0.0, 2)
+
+        # 3. Top 5 foods by calories
+        cur.execute("SELECT name, calories FROM big_data_analysis ORDER BY calories DESC LIMIT 5")
+        cal_rows = cur.fetchall()
+        top_calories = [{"name": r[0], "calories": float(r[1])} for r in cal_rows]
+
+        # 4. Top 5 foods by protein
+        cur.execute("SELECT name, protein_g FROM big_data_analysis ORDER BY protein_g DESC LIMIT 5")
+        prot_rows = cur.fetchall()
+        top_protein = [{"name": r[0], "protein": float(r[1])} for r in prot_rows]
+
+        cur.close()
+        return jsonify({
+            "success": True,
+            "summary": summary,
+            "top_calories": top_calories,
+            "top_protein": top_protein
+        }), 200
+    except Exception as e:
+        print(f"Error getting big data analytics: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
 
 # =========================
 # RUN
 # =========================
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True)

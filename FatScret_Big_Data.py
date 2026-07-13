@@ -1,8 +1,3 @@
-# === Cell 1 ===
-pip install requests requests_oauthlib pymongo pandas matplotlib
-
-# === Cell 3 ===
-
 from requests_oauthlib import OAuth1
 import requests
 from pymongo import MongoClient

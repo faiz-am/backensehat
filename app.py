@@ -15,6 +15,7 @@ from flask_mail import Mail, Message
 import firebase_admin
 from firebase_admin import credentials, auth
 import google.generativeai as genai
+from chatbot import get_chatbot_response
 
 
 # Load .env
@@ -22,6 +23,7 @@ load_dotenv()
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*", "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"], "allow_headers": ["Content-Type", "Authorization"]}})
+app.secret_key = os.getenv("JWT_SECRET_KEY", "fallbacksecretkey123")
 
 # =========================
 # GEMINI CHATBOT CONFIG
@@ -102,6 +104,95 @@ except Exception as e:
 @app.route('/', methods=['GET'])
 def root():
     return jsonify({"message": "api aktif", "status": "running"}), 200
+
+# =========================
+# PROFILE API (TANPA JWT - Sesuai dengan Flutter kamu saat ini)
+# =========================
+@app.route('/api/ambil-profil', methods=['GET'])
+def ambil_profil():
+    username = request.args.get('username', '').strip()
+    
+    if not username:
+        return jsonify({"success": False, "message": "Username diperlukan"}), 400
+
+    try:
+        cur = mysql.connection.cursor()
+        cur.execute("SELECT id, username, nama, telepon, umur, tinggi, berat FROM users WHERE username = %s", (username,))
+        user = cur.fetchone()
+        cur.close()
+
+        if not user:
+            return jsonify({"success": False, "message": "User tidak ditemukan"}), 404
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "id": user[0],
+                "username": user[1],
+                "nama": user[2] if user[2] else "",
+                "telepon": user[3] if user[3] else "",
+                "umur": user[4] if user[4] else "",
+                "tinggi": user[5] if user[5] else "",
+                "berat": user[6] if user[6] else ""
+            }
+        }), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route('/api/update-profil', methods=['POST'])
+def update_profil():
+    data = request.get_json()
+    
+    username = data.get('username', '').strip()
+    nama = data.get('nama', '').strip()
+    telepon = data.get('telepon', '').strip()
+    umur = data.get('umur', 0)
+    tinggi = data.get('tinggi', 0.0)
+    berat = data.get('berat', 0.0)
+
+    if not username:
+        return jsonify({"success": False, "message": "Username tidak boleh kosong"}), 400
+
+    try:
+        cur = mysql.connection.cursor()
+        cur.execute("""
+            UPDATE users 
+            SET nama = %s, telepon = %s, umur = %s, tinggi = %s, berat = %s 
+            WHERE username = %s
+        """, (nama, telepon, umur, tinggi, berat, username))
+        
+        mysql.connection.commit()
+        cur.close()
+        
+        return jsonify({"success": True, "message": "Profil berhasil diperbarui di database!"}), 200
+    except Exception as e:
+        mysql.connection.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+
+# Tambahkan di bagian bawah app.py
+@app.route('/api/status-kesehatan', methods=['GET'])
+def get_status_kesehatan():
+    username = request.args.get('username')
+    cur = mysql.connection.cursor()
+    cur.execute("SELECT tinggi, berat FROM users WHERE username = %s", (username,))
+    user = cur.fetchone()
+    cur.close()
+
+    if not user or not user[0]: return jsonify({"status": "Normal", "target_kalori": 2000}), 200
+        
+    tinggi_m = user[0] / 100
+    berat = user[1]
+    
+    # Perhitungan BMI (Sumber: World Health Organization - BMI Classification)
+    bmi = berat / (tinggi_m * tinggi_m)
+    
+    # Logika Medis: Obesitas jika BMI >= 27
+    if bmi >= 27:
+        return jsonify({"status": "Obesitas", "target_kalori": 1600}), 200
+    elif bmi < 18.5:
+        return jsonify({"status": "Kurang Gizi", "target_kalori": 2200}), 200
+    else:
+        return jsonify({"status": "Normal", "target_kalori": 2000}), 200
 
 # =========================
 # REGISTER API
@@ -373,6 +464,21 @@ def get_chart_stats():
         riwayat_activity_rows = cur.fetchall()
         riwayat_activity = [{"date": r[0], "count": int(r[1])} for r in riwayat_activity_rows]
         
+        # 5. External Big Data stats (Grouped by health status)
+        cur.execute("SELECT health_status, COUNT(*) FROM big_data_analysis GROUP BY health_status")
+        bd_rows = cur.fetchall()
+        bd_status = {"healthy": 0, "less_healthy": 0}
+        for row in bd_rows:
+            if row[0] == "Healthy":
+                bd_status["healthy"] = int(row[1])
+            elif row[0] == "Less Healthy":
+                bd_status["less_healthy"] = int(row[1])
+
+        # 6. External Big Data Top 10 calories foods with protein
+        cur.execute("SELECT name, calories, protein_g FROM big_data_analysis ORDER BY calories DESC LIMIT 10")
+        bd_cal_rows = cur.fetchall()
+        bd_top_calories = [{"name": r[0], "calories": float(r[1]) if r[1] is not None else 0.0, "protein": float(r[2]) if r[2] is not None else 0.0} for r in bd_cal_rows]
+        
         cur.close()
         
         return jsonify({
@@ -380,7 +486,9 @@ def get_chart_stats():
             "users": user_stats,
             "tips": tips_stats,
             "riwayat_conditions": riwayat_conditions,
-            "riwayat_activity": riwayat_activity
+            "riwayat_activity": riwayat_activity,
+            "external_food_status": bd_status,
+            "external_top_calories": bd_top_calories
         }), 200
     except Exception as e:
         print(f"Error getting chart stats: {e}")
@@ -542,6 +650,7 @@ def get_rule_based_response(message):
         )
 
 @app.route('/api/chat', methods=['POST'])
+@app.route('/chat', methods=['POST'])
 def chat():
     data = request.get_json()
     if not data or 'message' not in data:
@@ -549,18 +658,9 @@ def chat():
     
     user_message = data['message']
     
-    if chatbot_model:
-        try:
-            response = chatbot_model.generate_content(user_message)
-            reply = response.text
-            return jsonify({"success": True, "reply": reply.strip()})
-        except Exception as e:
-            print(f"Error calling Gemini API: {e}")
-            reply = get_rule_based_response(user_message)
-            return jsonify({"success": True, "reply": reply})
-    else:
-        reply = get_rule_based_response(user_message)
-        return jsonify({"success": True, "reply": reply})
+    # Use custom chatbot logic combining Rule-based and TF-IDF Cosine Similarity
+    reply = get_chatbot_response(user_message)
+    return jsonify({"success": True, "reply": reply})
 
 # =========================
 # BIG DATA ANALYTICS API
@@ -622,7 +722,71 @@ def get_bigdata_analytics():
         return jsonify({"success": False, "message": str(e)}), 500
 
 # =========================
+# BIG DATA FOODS API
+# =========================
+@app.route('/api/bigdata/foods', methods=['GET'])
+def get_bigdata_foods():
+    try:
+        search_query = request.args.get('search', '').strip()
+        cur = mysql.connection.cursor()
+        
+        if search_query:
+            cur.execute("""
+                SELECT id, input_query, name, description, calories, protein_g, fat_total_g, carbs_g, health_status 
+                FROM big_data_analysis 
+                WHERE name LIKE %s OR input_query LIKE %s
+            """, (f"%{search_query}%", f"%{search_query}%"))
+        else:
+            cur.execute("""
+                SELECT id, input_query, name, description, calories, protein_g, fat_total_g, carbs_g, health_status 
+                FROM big_data_analysis
+            """)
+            
+        rows = cur.fetchall()
+        cur.close()
+        
+        foods = []
+        for r in rows:
+            foods.append({
+                "id": r[0],
+                "input_query": r[1],
+                "name": r[2],
+                "description": r[3],
+                "calories": float(r[4]) if r[4] is not None else 0.0,
+                "protein_g": float(r[5]) if r[5] is not None else 0.0,
+                "fat_total_g": float(r[6]) if r[6] is not None else 0.0,
+                "carbs_g": float(r[7]) if r[7] is not None else 0.0,
+                "health_status": r[8]
+            })
+            
+        return jsonify({
+            "success": True,
+            "foods": foods
+        }), 200
+    except Exception as e:
+        print(f"Error getting big data foods: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+# =========================
+# RUN PIPELINE API (JWT PROTECTED)
+# =========================
+@app.route('/api/admin/run-pipeline', methods=['POST'])
+@jwt_required()
+def admin_run_pipeline():
+    try:
+        from big_data_pipeline import run_pipeline
+        run_pipeline()
+        return jsonify({"success": True, "message": "Pipeline data eksternal berhasil dijalankan! Data terbaru telah disimpan ke database."}), 200
+    except Exception as e:
+        print(f"Error running pipeline from API: {e}")
+        return jsonify({"success": False, "message": f"Gagal menjalankan pipeline: {str(e)}"}), 500
+
+# =========================
 # RUN
 # =========================
+import os
+
 if __name__ == '__main__':
-    app.run(debug=True)
+    # Membaca port default dari server hosting, jika tidak ada baru gunakan 5000
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)

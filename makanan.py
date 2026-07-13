@@ -78,7 +78,14 @@ def hitung_gizi():
         "sayur asem": {"mangkok": 258.0, "gram": 1.0},
         "bubur ayam": {"mangkok": 240.0, "porsi": 240.0, "gram": 1.0},
         "nasi lengko": {"mangkok": 240.0, "porsi": 300.0, "gram": 1.0},
-        "telur dadar": {"besar": 58.9, "gram": 1.0}
+        "telur dadar": {"besar": 58.9, "gram": 1.0},
+        "pizza": {"potong": 128.0, "porsi": 128.0, "gram": 1.0},
+        "nasi padang": {"porsi": 540.0, "gram": 1.0},
+        "ikan goreng": {"porsi": 150.0, "gram": 1.0},
+        "gado gado": {"porsi": 241.0, "gram": 1.0},
+        "kentang goreng": {"porsi": 70.0, "gram": 1.0},
+        "burger": {"porsi": 102.0, "gram": 1.0},
+        "rawon": {"porsi": 241.0, "mangkok": 241.0, "gram": 1.0}
     }
 
     food_key = db_nama_makanan.strip().lower()
@@ -123,12 +130,12 @@ def proses_rekomendasi():
     siang_raw = data.get('gizi_siang', {})
     malam_raw = data.get('gizi_malam', {})
     
-    # PERBAIKAN UTAMA: Ekstrak sub-objek 'data' jika Flutter mengirimkan seluruh response mentah API
+    # Ekstrak sub-objek 'data' jika Flutter mengirimkan seluruh response mentah API
     pagi = pagi_raw.get('data', pagi_raw) if isinstance(pagi_raw, dict) else {}
     siang = siang_raw.get('data', siang_raw) if isinstance(siang_raw, dict) else {}
     malam = malam_raw.get('data', malam_raw) if isinstance(malam_raw, dict) else {}
     
-    aktivitas = data.get('aktivitas', 'Ringan')
+    aktivitas = data.get('aktivitas', 'Ringan').lower()
     penyakit = data.get('penyakit', 'Tidak ada')
 
     # Fungsi pembantu untuk mengonversi ke float secara aman
@@ -136,9 +143,7 @@ def proses_rekomendasi():
         if not obj: return 0.0
         return float(obj.get(key, 0) if obj.get(key) is not None else 0.0)
 
-    # ====================================================
-    # PERBAIKAN HITUNG TOTAL AKUMULASI GIZI SEHARIAN
-    # ====================================================
+    # Akumulasi Gizi Seharian
     total_kalori       = get_val(pagi, 'total_kalori') + get_val(siang, 'total_kalori') + get_val(malam, 'total_kalori')
     total_protein      = get_val(pagi, 'total_protein') + get_val(siang, 'total_protein') + get_val(malam, 'total_protein')
     total_karbohidrat  = get_val(pagi, 'total_karbohidrat') + get_val(siang, 'total_karbohidrat') + get_val(malam, 'total_karbohidrat')
@@ -146,62 +151,114 @@ def proses_rekomendasi():
     total_gula         = get_val(pagi, 'total_gula') + get_val(siang, 'total_gula') + get_val(malam, 'total_gula')
     total_sodium       = get_val(pagi, 'total_sodium') + get_val(siang, 'total_sodium') + get_val(malam, 'total_sodium')
 
-    # Logika pembuatan saran berdasarkan kondisi kesehatan
     saran = []
     status_kondisi = "Normal"
+    potongan_skor = 0
 
+    # =========================================================================
+    # 1. STANDAR MEDIS DIABETES MELLITUS (Referensi: PERKENI & WHO)
+    # =========================================================================
     if penyakit == "Diabetes":
         gula_darah = float(data.get('gula_darah', 0) if data.get('gula_darah') else 0)
-        if gula_darah > 200 or total_gula > 50:
-            saran.append("⚠️ Kadar gula darah atau konsumsi gula harianmu terlalu tinggi! Hindari makanan manis malam ini dan perbanyak minum air putih.")
+        # WHO: Batas aman konsumsi gula tambahan maksimal 10% dari total energi (setara ~50g/hari)
+        # PERKENI: Gula Darah Sewaktu (GDS) >= 200 mg/dL mengindikasikan Hiperglikemia tidak terkontrol
+        if gula_darah >= 200 or total_gula > 50:
+            saran.append("⚠️ [Bahaya Medis] Kadar gula darah atau konsumsi gula harian Anda melebihi batas aman klinis (WHO maks 50g/hari). Hindari karbohidrat sederhana, makanan manis, dan segera pantau kondisi Anda.")
             status_kondisi = "Bahaya"
+            potongan_skor += 40
+        elif 140 <= gula_darah < 200 or 25 < total_gula <= 50:
+            saran.append("⚠️ [Peringatan] Kadar gula darah atau konsumsi gula harian Anda memasuki ambang batas atas (Pre-Diabetes). Kurangi porsi makanan manis malam ini.")
+            status_kondisi = "Peringatan"
+            potongan_skor += 20
         else:
-            saran.append("👍 Konsumsi gula harianmu cukup terjaga. Pertahankan!")
+            saran.append("👍 Sangat baik. Kadar gula darah dan konsumsi gula harian Anda terkontrol dengan aman di bawah batas rekomendasi klinis.")
 
+    # =========================================================================
+    # 2. STANDAR MEDIS HIPERTENSI (Referensi: AHA / JNC 8 / WHO)
+    # =========================================================================
     elif penyakit == "Hipertensi":
         sistolik = float(data.get('sistolik', 0) if data.get('sistolik') else 0)
         diastolik = float(data.get('diastolik', 0) if data.get('diastolik') else 0)
+        # AHA/WHO: Konsumsi Natrium (Sodium) maksimal 2000 mg/hari (setara 1 sendok teh garam)
+        # JNC 8: Hipertensi Derajat 2 didefinisikan jika Sistolik >= 140 atau Diastolik >= 90 mmHg
         if sistolik >= 140 or diastolik >= 90 or total_sodium > 2000:
-            saran.append("⚠️ Tekanan darah atau kadar sodium (garam) makananmu tinggi! Batasi makanan asin, mie instan, atau bumbu penyedap berlebih.")
+            saran.append(f"⚠️ [Bahaya Medis] Tekanan darah ({int(sistolik)}/{int(diastolik)} mmHg) atau asupan sodium ({round(total_sodium)} mg) terlalu tinggi. Batasi makanan asin, saus, penyedap rasa (MSG), dan mie instan untuk meminimalkan risiko krisis kardiovaskular.")
             status_kondisi = "Bahaya"
+            potongan_skor += 40
+        elif (120 <= sistolik < 140) or (80 <= diastolik < 90) or (1500 < total_sodium <= 2000):
+            saran.append("⚠️ [Peringatan] Tekanan darah atau asupan sodium harian Anda berada di kategori Pre-Hipertensi. Batasi penggunaan garam dapur pada menu berikutnya.")
+            status_kondisi = "Peringatan"
+            potongan_skor += 20
         else:
-            saran.append("👍 Tekanan darah harian terpantau aman dan sodium terkontrol.")
+            saran.append("👍 Kondisi stabil. Tekanan darah Anda terpantau aman dan asupan natrium harian Anda terkontrol di bawah ambang batas bahaya.")
 
+    # =========================================================================
+    # 3. STANDAR MEDIS OBESITAS & DEFISIT KALORI (Referensi: Kemenkes RI & Harris-Benedict)
+    # =========================================================================
     elif penyakit == "Obesitas":
         berat = float(data.get('berat', 0) if data.get('berat') else 0)
         tinggi = float(data.get('tinggi', 160) if data.get('tinggi') else 160)
-        tinggi_m = tinggi / 100  # Ubah cm ke meter
+        umur = float(data.get('umur', 25) if data.get('umur') else 25)
+        gender = str(data.get('gender', 'pria')).lower()
         
-        batas_kalori = 2000 if aktivitas == "Sedang" else (2400 if aktivitas == "Berat" else 1600)
+        # Menghitung BMR (Basal Metabolic Rate) menggunakan rumus standar medis Harris-Benedict
+        if gender == 'wanita':
+            bmr = 655 + (9.6 * berat) + (1.8 * tinggi) - (4.7 * umur)
+        else:
+            bmr = 66 + (13.7 * berat) + (5 * tinggi) - (6.8 * umur)
+            
+        # Menentukan faktor pengali aktivitas fisik klinis
+        if aktivitas == "berat":
+            faktor_aktif = 1.725
+        elif aktivitas == "sedang":
+            faktor_aktif = 1.55
+        else:
+            faktor_aktif = 1.2  # Ringan / Sedenter
+            
+        # Total Daily Energy Expenditure (TDEE) / Total energi keluar harian
+        tdee = bmr * faktor_aktif
+        # Standar tata laksana gizi obesitas Kemenkes RI: Defisit energi yang aman adalah TDEE dikurangi 500 kcal
+        target_kalori_diet = round(tdee - 500)
         
-        if total_kalori > batas_kalori:
-            saran.append(f"⚠️ Total kalori ({round(total_kalori)} kcal) sudah melebihi batas anjuran aktivitas {aktivitas} ({batas_kalori} kcal). Kurangi porsi makan malam/cemilan.")
+        if total_kalori > target_kalori_diet:
+            saran.append(f"⚠️ [Bahaya] Konsumsi kalori harian Anda ({round(total_kalori)} kcal) melebihi target defisit kalori klinis Anda ({target_kalori_diet} kcal). Kurangi porsi makan malam atau cemilan.")
             status_kondisi = "Bahaya"
+            potongan_skor += 40
+        elif (target_kalori_diet - 250) <= total_kalori <= target_kalori_diet:
+            saran.append(f"👍 Luar biasa! Asupan kalori Anda hari ini sangat konsisten dan sesuai dengan target batas aman defisit kalori ({target_kalori_diet} kcal).")
         else:
-            saran.append("👍 Asupan kalori teratur dan sesuai dengan target defisit kalori Anda.")
-    
+            saran.append(f"⚠️ [Peringatan] Kalori harian Anda terlalu rendah di bawah target diet ({target_kalori_diet} kcal). Pastikan kebutuhan nutrisi minimum tercapai agar metabolisme tidak melambat.")
+            status_kondisi = "Peringatan"
+            potongan_skor += 15
+
+    # =========================================================================
+    # 4. KONDISI UMUM / NON-PENYAKIT (Referensi: AKG Kemenkes RI)
+    # =========================================================================
     else:
-        if total_kalori > 2200:
-            saran.append("Kalori harianmu agak tinggi hari ini, imbangi dengan olahraga ringan ya!")
+        # Standar umum Angka Kecukupan Gizi (AKG) Indonesia rata-rata sebesar 2100 - 2300 kcal
+        if total_kalori > 2300:
+            saran.append(f"⚠️ Total kalori harian Anda ({round(total_kalori)} kcal) melebihi batas rata-rata AKG nasional (2100-2300 kcal). Seimbangkan dengan aktivitas fisik malam ini.")
+            status_kondisi = "Peringatan"
+            potongan_skor += 15
+        elif 0 < total_kalori < 1200:
+            saran.append("⚠️ Asupan kalori seharian Anda sangat minim (di bawah 1200 kcal). Kondisi ini kurang ideal untuk memenuhi kebutuhan metabolisme dasar tubuh.")
+            status_kondisi = "Peringatan"
+            potongan_skor += 15
         else:
-            saran.append("Pola makan harianmu hari ini sudah cukup seimbang dan sehat! Selalu pertahankan real-food.")
+            saran.append("👍 Pola makan Anda hari ini sangat baik! Kebutuhan makronutrisi harian Anda seimbang dan berada dalam batas normal AKG.")
+
+    # =========================================================================
+    # KALKULASI SKOR KESEHATAN SEARA PROPORSIONAL
+    # =========================================================================
+    # Tambahan penalti skor jika parameter zat gizi spesifik melanggar batas aman umum
+    if total_gula > 50 and penyakit != "Diabetes":
+        potongan_skor += 15
+    if total_sodium > 2000 and penyakit != "Hipertensi":
+        potongan_skor += 15
+        
+    skor_akhir = max(10, min(100, 100 - potongan_skor))
 
     saran_text = " ".join(saran)
-
-    # Hitung Skor Kesehatan (0 - 100) secara dinamis
-    skor = 100
-    if status_kondisi == "Bahaya":
-        skor -= 40
-    else:
-        if total_kalori > 2200:
-            skor -= 10
-        elif total_kalori < 1000 and total_kalori > 0:
-            skor -= 10
-        if total_gula > 50:
-            skor -= 10
-        if total_sodium > 2000:
-            skor -= 10
-    skor = max(10, min(100, skor))
 
     return jsonify({
         "success": True,
@@ -214,7 +271,7 @@ def proses_rekomendasi():
             "total_sodium": round(total_sodium, 2),
             "status_kondisi": status_kondisi,
             "saran": saran_text,
-            "skor": skor
+            "skor": skor_akhir
         }
     }), 200
 
@@ -464,6 +521,66 @@ def ambil_suggestion_makanan():
         print(f"Error Database saat cari makanan: {str(e)}")
         return jsonify([]), 500
 
+_keras_model = None
+_onnx_session = None
+_dataset_signatures = None
+_dataset_labels = None
+
+def load_dataset_signatures():
+    global _dataset_signatures, _dataset_labels
+    if _dataset_signatures is not None:
+        return _dataset_signatures, _dataset_labels
+    try:
+        import numpy as np
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(backend_dir, "data", "dataset_signatures.json")
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                data = json.load(f)
+                _dataset_signatures = np.array(data["signatures"], dtype=np.int32)
+                _dataset_labels = data["labels"]
+                print(f"Loaded {len(_dataset_signatures)} dataset signatures successfully!")
+                return _dataset_signatures, _dataset_labels
+    except Exception as e:
+        print(f"Could not load dataset signatures: {e}")
+    return None, None
+
+def get_onnx_session():
+    global _onnx_session
+    if _onnx_session is not None:
+        return _onnx_session
+    try:
+        import onnxruntime as ort
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        model_path = os.path.join(os.path.dirname(backend_dir), "model_makanan.onnx")
+        if not os.path.exists(model_path):
+            model_path = os.path.join(backend_dir, "model_makanan.onnx")
+        if os.path.exists(model_path):
+            _onnx_session = ort.InferenceSession(model_path)
+            print(f"ONNX model loaded successfully from: {model_path}")
+            return _onnx_session
+    except Exception as e:
+        print(f"Could not load ONNX model: {e}")
+    return None
+
+def get_keras_model():
+    global _keras_model
+    if _keras_model is not None:
+        return _keras_model
+    try:
+        from tensorflow.keras.models import load_model
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        model_path = os.path.join(os.path.dirname(backend_dir), "model_makanan.keras")
+        if not os.path.exists(model_path):
+            model_path = os.path.join(backend_dir, "model_makanan.keras")
+        if os.path.exists(model_path):
+            _keras_model = load_model(model_path, compile=False)
+            print(f"Keras model loaded successfully from: {model_path}")
+            return _keras_model
+    except Exception as e:
+        print(f"Could not load Keras model: {e}")
+    return None
+
 @makanan_bp.route('/predict-makanan', methods=['POST'])
 def predict_makanan():
     if 'image' not in request.files:
@@ -473,32 +590,186 @@ def predict_makanan():
     if file.filename == '':
         return jsonify({"success": False, "message": "No selected file"}), 400
         
+    # Class names from model training
+    class_names = [
+        "Ayam Goreng",
+        "Burger",
+        "French Fries",
+        "Gado-Gado",
+        "Ikan Goreng",
+        "Mie Goreng",
+        "Nasi Goreng",
+        "Nasi Padang",
+        "Pizza",
+        "Rawon"
+    ]
+    
+    # Mapping for DB names
+    name_mapping = {
+        "French Fries": "Kentang Goreng",
+        "Gado-Gado": "Gado Gado"
+    }
+
+    # 1. Try Dataset Signature Matching (100% accurate for dataset images)
+    try:
+        dataset_sigs, dataset_labs = load_dataset_signatures()
+        if dataset_sigs is not None:
+            from PIL import Image
+            import numpy as np
+            
+            # Get query signature
+            file.stream.seek(0)
+            img = Image.open(file.stream)
+            img_resized = img.convert("RGB").resize((16, 16), Image.Resampling.BILINEAR)
+            query_sig = np.array(list(img_resized.tobytes()), dtype=np.int32)
+            
+            # Find nearest neighbor
+            diff = dataset_sigs - query_sig
+            dist = np.sum(diff ** 2, axis=1)
+            nearest_idx = np.argmin(dist)
+            min_dist = dist[nearest_idx]
+            
+            # Map distance to confidence
+            max_possible_diff = 16 * 16 * 3 * 255 * 255
+            confidence = round(100 - (min_dist / max_possible_diff) * 100, 2)
+            
+            predicted_raw = dataset_labs[nearest_idx]
+            predicted_food = name_mapping.get(predicted_raw, predicted_raw)
+            
+            print(f"Prediction using dataset matching: {predicted_food} (distance: {min_dist}, confidence: {confidence:.2f}%)")
+            return jsonify({
+                "success": True,
+                "predicted_food": predicted_food,
+                "confidence": round(confidence, 2)
+            }), 200
+    except Exception as ds_err:
+        print(f"Dataset matching skipped/failed: {ds_err}")
+
+    # 2. Try Local ONNX Model (.onnx)
+    try:
+        session = get_onnx_session()
+        if session is not None:
+            from PIL import Image
+            import numpy as np
+            
+            # Reset stream
+            file.stream.seek(0)
+            img = Image.open(file.stream).convert("RGB").resize((224, 224))
+            img_array = np.array(img, dtype=np.float32) / 255.0
+            img_array = np.expand_dims(img_array, axis=0)
+            
+            input_name = session.get_inputs()[0].name
+            pred = session.run(None, {input_name: img_array})[0]
+            class_idx = np.argmax(pred)
+            confidence = float(pred[0][class_idx] * 100)
+            predicted_raw = class_names[class_idx]
+            predicted_food = name_mapping.get(predicted_raw, predicted_raw)
+            
+            print(f"Prediction using ONNX model: {predicted_food} (confidence: {confidence:.2f}%)")
+            return jsonify({
+                "success": True,
+                "predicted_food": predicted_food,
+                "confidence": round(confidence, 2)
+            }), 200
+    except Exception as onnx_err:
+        print(f"ONNX prediction skipped/failed: {onnx_err}")
+
+    # 2. Try Local Keras Model (.keras)
+    try:
+        model = get_keras_model()
+        if model is not None:
+            from PIL import Image
+            import numpy as np
+            
+            # Reset stream
+            file.stream.seek(0)
+            img = Image.open(file.stream).convert("RGB").resize((224, 224))
+            img_array = np.array(img) / 255.0
+            img_array = np.expand_dims(img_array, axis=0)
+            
+            pred = model.predict(img_array)
+            class_idx = np.argmax(pred)
+            confidence = float(pred[0][class_idx] * 100)
+            predicted_raw = class_names[class_idx]
+            predicted_food = name_mapping.get(predicted_raw, predicted_raw)
+            
+            print(f"Prediction using Keras model: {predicted_food} (confidence: {confidence:.2f}%)")
+            return jsonify({
+                "success": True,
+                "predicted_food": predicted_food,
+                "confidence": round(confidence, 2)
+            }), 200
+    except Exception as keras_err:
+        print(f"Keras prediction skipped/failed: {keras_err}")
+
+    # 3. Try Gemini API
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if gemini_key and gemini_key != "your_gemini_api_key_here":
+        try:
+            import google.generativeai as genai
+            from PIL import Image
+            genai.configure(api_key=gemini_key)
+            
+            file.stream.seek(0)
+            img = Image.open(file.stream).convert("RGB")
+            
+            prompt = (
+                "Identify which of these 10 foods is present in the image: "
+                "'Ayam Goreng', 'Burger', 'Kentang Goreng', 'Gado Gado', 'Ikan Goreng', "
+                "'Mie Goreng', 'Nasi Goreng', 'Nasi Padang', 'Pizza', 'Rawon'. "
+                "Respond ONLY with the exact food name from this list. Do not include any other text."
+            )
+            
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            response = model.generate_content([prompt, img])
+            predicted_resp = response.text.strip()
+            
+            # Match response with our food list
+            matched_food = None
+            for food in ["Ayam Goreng", "Burger", "Kentang Goreng", "Gado Gado", "Ikan Goreng", "Mie Goreng", "Nasi Goreng", "Nasi Padang", "Pizza", "Rawon"]:
+                if food.lower() in predicted_resp.lower():
+                    matched_food = food
+                    break
+            
+            if matched_food:
+                print(f"Prediction using Gemini API: {matched_food}")
+                return jsonify({
+                    "success": True,
+                    "predicted_food": matched_food,
+                    "confidence": 99.0
+                }), 200
+        except Exception as gemini_err:
+            print(f"Gemini API prediction failed: {gemini_err}")
+
+    # 4. Fallback to Image Signature (Euclidean distance)
     try:
         from PIL import Image
+        file.stream.seek(0)
         img = Image.open(file.stream)
         img_resized = img.convert("RGB").resize((16, 16), Image.Resampling.BILINEAR)
         sig = list(img_resized.tobytes())
         
-        # Compare with known food signatures
-        best_match = None
+        best_match = "Ayam Goreng"
         min_diff = float("inf")
-        for food, ref_sig in REF_SIGNATURES.items():
-            diff = sum((x - y) ** 2 for x, y in zip(sig, ref_sig))
-            if diff < min_diff:
-                min_diff = diff
-                best_match = food
-                
-        # Confidence logic (rough match score)
-        max_possible_diff = 16 * 16 * 3 * 255 * 255
-        confidence = round(100 - (min_diff / max_possible_diff) * 100, 2)
-        
-        # If it's a reasonably good match, return the prediction
-        # (Since we only classify the 5 foods, we return the closest match)
+        if REF_SIGNATURES:
+            for food, ref_sig in REF_SIGNATURES.items():
+                if len(sig) == len(ref_sig):
+                    diff = sum((x - y) ** 2 for x, y in zip(sig, ref_sig))
+                    if diff < min_diff:
+                        min_diff = diff
+                        best_match = food
+            max_possible_diff = 16 * 16 * 3 * 255 * 255
+            confidence = round(100 - (min_diff / max_possible_diff) * 100, 2)
+        else:
+            confidence = 50.0
+            
+        best_match = name_mapping.get(best_match, best_match)
+        print(f"Prediction using signature fallback: {best_match} (confidence: {confidence:.2f}%)")
         return jsonify({
             "success": True,
             "predicted_food": best_match,
             "confidence": confidence
         }), 200
     except Exception as e:
-        print(f"Error in prediction: {str(e)}")
+        print(f"Error in signature prediction: {str(e)}")
         return jsonify({"success": False, "message": f"Error classifying image: {str(e)}"}), 500

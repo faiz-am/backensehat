@@ -4,6 +4,7 @@ from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 import os
 import json
+from threading import Thread
 import random
 from dotenv import load_dotenv
 from flask_jwt_extended import (
@@ -53,21 +54,17 @@ else:
 # =========================
 # MAIL CONFIG
 # =========================
-# =========================
-# MAIL CONFIG
-# =========================
-app.config['MAIL_SERVER'] = "smtp.gmail.com"
-app.config['MAIL_PORT'] = 587
+app.config['MAIL_SERVER'] = os.getenv("MAIL_SERVER", 'smtp.gmail.com')
+app.config['MAIL_PORT'] = int(os.getenv("MAIL_PORT", 465))
 app.config['MAIL_USERNAME'] = os.getenv("MAIL_USERNAME")
 app.config['MAIL_PASSWORD'] = os.getenv("MAIL_PASSWORD")
-app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USE_SSL'] = False
-
+app.config['MAIL_USE_TLS'] = False  # Langsung diisi False tanpa os.getenv
+app.config['MAIL_USE_SSL'] = True   # Langsung diisi True tanpa os.getenv
 mail = Mail(app)
-
 print("MAIL_SERVER =", app.config["MAIL_SERVER"])
 print("MAIL_PORT =", app.config["MAIL_PORT"])
 print("MAIL_USERNAME =", app.config["MAIL_USERNAME"])
+
 # =========================
 # MYSQL CONFIG
 # =========================
@@ -201,6 +198,15 @@ def get_status_kesehatan():
     else:
         return jsonify({"status": "Normal", "target_kalori": 2000}), 200
 
+
+# Fungsi helper untuk mengirim email secara async di background
+def send_async_email(flask_app, msg):
+    with flask_app.app_context():
+        try:
+            mail.send(msg)
+            print("LOG: Email OTP berhasil dikirim di background!")
+        except Exception as e:
+            print(f"LOG ERROR: Gagal mengirim email OTP di background: {e}")
 # =========================
 # REGISTER API
 # =========================
@@ -215,67 +221,63 @@ def register():
         return jsonify({"success": False, "message": "Isi semua field"}), 400
 
     password = generate_password_hash(password_raw)
-
     cur = mysql.connection.cursor()
 
-    cur.execute("SELECT * FROM users WHERE username=%s", (username,))
-    user = cur.fetchone()
-
-    if user:
-        cur.close()
-        return jsonify({"success": False, "message": "Username sudah digunakan"}), 400
-
-    otp = str(random.randint(100000, 999999))
-
     try:
-        print("1. Mulai register")
+        # 1. Cek apakah username sudah ada
+        cur.execute("SELECT * FROM users WHERE username=%s", (username,))
+        user = cur.fetchone()
 
+        if user:
+            return jsonify({"success": False, "message": "Username sudah digunakan"}), 400
+
+        # 2. Generate OTP & Insert ke database
+        otp = str(random.randint(100000, 999999))
         cur.execute(
             "INSERT INTO users(username, password, is_verified, otp) VALUES(%s,%s,%s,%s)",
             (username, password, 0, otp)
         )
-        print("2. INSERT berhasil")
+        
+        # 3. Commit data ke database TERLEBIH DAHULU agar data aman tersimpan
+        mysql.connection.commit()
+        print("LOG: Data user berhasil di-insert dan di-commit.")
 
+        # 4. Siapkan format Email
         msg = Message(
             'Kode Verifikasi OTP - Sehat App',
             sender=app.config['MAIL_USERNAME'],
             recipients=[username]
         )
-
-        # Pakai HTML kamu yang panjang juga boleh
         msg.html = f"""
-        <div style="font-family: Arial, sans-serif;">
-            <h2>Sehat App</h2>
-            <p>Kode OTP Anda:</p>
-            <h1>{otp}</h1>
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 12px; background-color: #ffffff;">
+            <div style="text-align: center; margin-bottom: 20px;">
+                <h1 style="color: #2196F3; margin: 0;">Sehat App</h1>
+                <p style="color: #666; margin: 5px 0 0 0;">Verifikasi Akun Anda</p>
+            </div>
+            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+            <p>Halo,</p>
+            <p>Terima kasih telah mendaftar di Sehat App. Silakan gunakan kode OTP di bawah ini untuk menyelesaikan pendaftaran Anda:</p>
+            <div style="text-align: center; margin: 30px 0; padding: 15px; background-color: #f0f6ff; border-radius: 8px;">
+                <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #1a237e;">{otp}</span>
+            </div>
+            <p style="color: #555; font-size: 14px;">Kode OTP ini bersifat rahasia. Jangan bagikan kode ini kepada siapa pun.</p>
+            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+            <p style="color: #999; font-size: 12px; text-align: center; margin: 0;">Ini adalah email otomatis, mohon tidak membalas email ini.</p>
         </div>
         """
+        
+        # 5. Jalankan pengiriman email via Thread agar tidak memicu timeout Gunicorn
+        Thread(target=send_async_email, args=(app, msg)).start()
 
-        print("3. Sebelum mail.send()")
-
-        mail.send(msg)
-
-        print("4. Sesudah mail.send()")
-
-        mysql.connection.commit()
-
-        print("5. Commit berhasil")
+        return jsonify({"success": True, "message": "Register berhasil, silakan cek email Anda untuk kode OTP."}), 201
 
     except Exception as e:
         mysql.connection.rollback()
-        print("ERROR:", repr(e))
-        return jsonify({
-            "success": False,
-            "message": str(e)
-        }), 500
-
+        print(f"LOG ERROR: Terjadi kegagalan registrasi: {e}")
+        return jsonify({"success": False, "message": "Terjadi kesalahan internal pada server"}), 500
+        
     finally:
         cur.close()
-
-    return jsonify({
-        "success": True,
-        "message": "Register berhasil, silakan cek email Anda untuk kode OTP."
-    })
 
 # =========================
 # VERIFY OTP API

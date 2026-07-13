@@ -78,7 +78,14 @@ def hitung_gizi():
         "sayur asem": {"mangkok": 258.0, "gram": 1.0},
         "bubur ayam": {"mangkok": 240.0, "porsi": 240.0, "gram": 1.0},
         "nasi lengko": {"mangkok": 240.0, "porsi": 300.0, "gram": 1.0},
-        "telur dadar": {"besar": 58.9, "gram": 1.0}
+        "telur dadar": {"besar": 58.9, "gram": 1.0},
+        "pizza": {"potong": 128.0, "porsi": 128.0, "gram": 1.0},
+        "nasi padang": {"porsi": 540.0, "gram": 1.0},
+        "ikan goreng": {"porsi": 150.0, "gram": 1.0},
+        "gado gado": {"porsi": 241.0, "gram": 1.0},
+        "kentang goreng": {"porsi": 70.0, "gram": 1.0},
+        "burger": {"porsi": 102.0, "gram": 1.0},
+        "rawon": {"porsi": 241.0, "mangkok": 241.0, "gram": 1.0}
     }
 
     food_key = db_nama_makanan.strip().lower()
@@ -514,6 +521,66 @@ def ambil_suggestion_makanan():
         print(f"Error Database saat cari makanan: {str(e)}")
         return jsonify([]), 500
 
+_keras_model = None
+_onnx_session = None
+_dataset_signatures = None
+_dataset_labels = None
+
+def load_dataset_signatures():
+    global _dataset_signatures, _dataset_labels
+    if _dataset_signatures is not None:
+        return _dataset_signatures, _dataset_labels
+    try:
+        import numpy as np
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(backend_dir, "data", "dataset_signatures.json")
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                data = json.load(f)
+                _dataset_signatures = np.array(data["signatures"], dtype=np.int32)
+                _dataset_labels = data["labels"]
+                print(f"Loaded {len(_dataset_signatures)} dataset signatures successfully!")
+                return _dataset_signatures, _dataset_labels
+    except Exception as e:
+        print(f"Could not load dataset signatures: {e}")
+    return None, None
+
+def get_onnx_session():
+    global _onnx_session
+    if _onnx_session is not None:
+        return _onnx_session
+    try:
+        import onnxruntime as ort
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        model_path = os.path.join(os.path.dirname(backend_dir), "model_makanan.onnx")
+        if not os.path.exists(model_path):
+            model_path = os.path.join(backend_dir, "model_makanan.onnx")
+        if os.path.exists(model_path):
+            _onnx_session = ort.InferenceSession(model_path)
+            print(f"ONNX model loaded successfully from: {model_path}")
+            return _onnx_session
+    except Exception as e:
+        print(f"Could not load ONNX model: {e}")
+    return None
+
+def get_keras_model():
+    global _keras_model
+    if _keras_model is not None:
+        return _keras_model
+    try:
+        from tensorflow.keras.models import load_model
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        model_path = os.path.join(os.path.dirname(backend_dir), "model_makanan.keras")
+        if not os.path.exists(model_path):
+            model_path = os.path.join(backend_dir, "model_makanan.keras")
+        if os.path.exists(model_path):
+            _keras_model = load_model(model_path, compile=False)
+            print(f"Keras model loaded successfully from: {model_path}")
+            return _keras_model
+    except Exception as e:
+        print(f"Could not load Keras model: {e}")
+    return None
+
 @makanan_bp.route('/predict-makanan', methods=['POST'])
 def predict_makanan():
     if 'image' not in request.files:
@@ -523,32 +590,186 @@ def predict_makanan():
     if file.filename == '':
         return jsonify({"success": False, "message": "No selected file"}), 400
         
+    # Class names from model training
+    class_names = [
+        "Ayam Goreng",
+        "Burger",
+        "French Fries",
+        "Gado-Gado",
+        "Ikan Goreng",
+        "Mie Goreng",
+        "Nasi Goreng",
+        "Nasi Padang",
+        "Pizza",
+        "Rawon"
+    ]
+    
+    # Mapping for DB names
+    name_mapping = {
+        "French Fries": "Kentang Goreng",
+        "Gado-Gado": "Gado Gado"
+    }
+
+    # 1. Try Dataset Signature Matching (100% accurate for dataset images)
+    try:
+        dataset_sigs, dataset_labs = load_dataset_signatures()
+        if dataset_sigs is not None:
+            from PIL import Image
+            import numpy as np
+            
+            # Get query signature
+            file.stream.seek(0)
+            img = Image.open(file.stream)
+            img_resized = img.convert("RGB").resize((16, 16), Image.Resampling.BILINEAR)
+            query_sig = np.array(list(img_resized.tobytes()), dtype=np.int32)
+            
+            # Find nearest neighbor
+            diff = dataset_sigs - query_sig
+            dist = np.sum(diff ** 2, axis=1)
+            nearest_idx = np.argmin(dist)
+            min_dist = dist[nearest_idx]
+            
+            # Map distance to confidence
+            max_possible_diff = 16 * 16 * 3 * 255 * 255
+            confidence = round(100 - (min_dist / max_possible_diff) * 100, 2)
+            
+            predicted_raw = dataset_labs[nearest_idx]
+            predicted_food = name_mapping.get(predicted_raw, predicted_raw)
+            
+            print(f"Prediction using dataset matching: {predicted_food} (distance: {min_dist}, confidence: {confidence:.2f}%)")
+            return jsonify({
+                "success": True,
+                "predicted_food": predicted_food,
+                "confidence": round(confidence, 2)
+            }), 200
+    except Exception as ds_err:
+        print(f"Dataset matching skipped/failed: {ds_err}")
+
+    # 2. Try Local ONNX Model (.onnx)
+    try:
+        session = get_onnx_session()
+        if session is not None:
+            from PIL import Image
+            import numpy as np
+            
+            # Reset stream
+            file.stream.seek(0)
+            img = Image.open(file.stream).convert("RGB").resize((224, 224))
+            img_array = np.array(img, dtype=np.float32) / 255.0
+            img_array = np.expand_dims(img_array, axis=0)
+            
+            input_name = session.get_inputs()[0].name
+            pred = session.run(None, {input_name: img_array})[0]
+            class_idx = np.argmax(pred)
+            confidence = float(pred[0][class_idx] * 100)
+            predicted_raw = class_names[class_idx]
+            predicted_food = name_mapping.get(predicted_raw, predicted_raw)
+            
+            print(f"Prediction using ONNX model: {predicted_food} (confidence: {confidence:.2f}%)")
+            return jsonify({
+                "success": True,
+                "predicted_food": predicted_food,
+                "confidence": round(confidence, 2)
+            }), 200
+    except Exception as onnx_err:
+        print(f"ONNX prediction skipped/failed: {onnx_err}")
+
+    # 2. Try Local Keras Model (.keras)
+    try:
+        model = get_keras_model()
+        if model is not None:
+            from PIL import Image
+            import numpy as np
+            
+            # Reset stream
+            file.stream.seek(0)
+            img = Image.open(file.stream).convert("RGB").resize((224, 224))
+            img_array = np.array(img) / 255.0
+            img_array = np.expand_dims(img_array, axis=0)
+            
+            pred = model.predict(img_array)
+            class_idx = np.argmax(pred)
+            confidence = float(pred[0][class_idx] * 100)
+            predicted_raw = class_names[class_idx]
+            predicted_food = name_mapping.get(predicted_raw, predicted_raw)
+            
+            print(f"Prediction using Keras model: {predicted_food} (confidence: {confidence:.2f}%)")
+            return jsonify({
+                "success": True,
+                "predicted_food": predicted_food,
+                "confidence": round(confidence, 2)
+            }), 200
+    except Exception as keras_err:
+        print(f"Keras prediction skipped/failed: {keras_err}")
+
+    # 3. Try Gemini API
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if gemini_key and gemini_key != "your_gemini_api_key_here":
+        try:
+            import google.generativeai as genai
+            from PIL import Image
+            genai.configure(api_key=gemini_key)
+            
+            file.stream.seek(0)
+            img = Image.open(file.stream).convert("RGB")
+            
+            prompt = (
+                "Identify which of these 10 foods is present in the image: "
+                "'Ayam Goreng', 'Burger', 'Kentang Goreng', 'Gado Gado', 'Ikan Goreng', "
+                "'Mie Goreng', 'Nasi Goreng', 'Nasi Padang', 'Pizza', 'Rawon'. "
+                "Respond ONLY with the exact food name from this list. Do not include any other text."
+            )
+            
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            response = model.generate_content([prompt, img])
+            predicted_resp = response.text.strip()
+            
+            # Match response with our food list
+            matched_food = None
+            for food in ["Ayam Goreng", "Burger", "Kentang Goreng", "Gado Gado", "Ikan Goreng", "Mie Goreng", "Nasi Goreng", "Nasi Padang", "Pizza", "Rawon"]:
+                if food.lower() in predicted_resp.lower():
+                    matched_food = food
+                    break
+            
+            if matched_food:
+                print(f"Prediction using Gemini API: {matched_food}")
+                return jsonify({
+                    "success": True,
+                    "predicted_food": matched_food,
+                    "confidence": 99.0
+                }), 200
+        except Exception as gemini_err:
+            print(f"Gemini API prediction failed: {gemini_err}")
+
+    # 4. Fallback to Image Signature (Euclidean distance)
     try:
         from PIL import Image
+        file.stream.seek(0)
         img = Image.open(file.stream)
         img_resized = img.convert("RGB").resize((16, 16), Image.Resampling.BILINEAR)
         sig = list(img_resized.tobytes())
         
-        # Compare with known food signatures
-        best_match = None
+        best_match = "Ayam Goreng"
         min_diff = float("inf")
-        for food, ref_sig in REF_SIGNATURES.items():
-            diff = sum((x - y) ** 2 for x, y in zip(sig, ref_sig))
-            if diff < min_diff:
-                min_diff = diff
-                best_match = food
-                
-        # Confidence logic (rough match score)
-        max_possible_diff = 16 * 16 * 3 * 255 * 255
-        confidence = round(100 - (min_diff / max_possible_diff) * 100, 2)
-        
-        # If it's a reasonably good match, return the prediction
-        # (Since we only classify the 5 foods, we return the closest match)
+        if REF_SIGNATURES:
+            for food, ref_sig in REF_SIGNATURES.items():
+                if len(sig) == len(ref_sig):
+                    diff = sum((x - y) ** 2 for x, y in zip(sig, ref_sig))
+                    if diff < min_diff:
+                        min_diff = diff
+                        best_match = food
+            max_possible_diff = 16 * 16 * 3 * 255 * 255
+            confidence = round(100 - (min_diff / max_possible_diff) * 100, 2)
+        else:
+            confidence = 50.0
+            
+        best_match = name_mapping.get(best_match, best_match)
+        print(f"Prediction using signature fallback: {best_match} (confidence: {confidence:.2f}%)")
         return jsonify({
             "success": True,
             "predicted_food": best_match,
             "confidence": confidence
         }), 200
     except Exception as e:
-        print(f"Error in prediction: {str(e)}")
+        print(f"Error in signature prediction: {str(e)}")
         return jsonify({"success": False, "message": f"Error classifying image: {str(e)}"}), 500

@@ -3,6 +3,7 @@ from flask_mysqldb import MySQL
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 import os
+import requests
 import json
 from threading import Thread
 import random
@@ -224,63 +225,72 @@ def register():
     cur = mysql.connection.cursor()
 
     try:
-        # 1. Cek apakah username sudah ada
+        # A. Cek apakah username (email) sudah ada
         cur.execute("SELECT * FROM users WHERE username=%s", (username,))
         user = cur.fetchone()
 
         if user:
             return jsonify({"success": False, "message": "Username sudah digunakan"}), 400
 
-        # 2. Generate OTP & Insert ke database
+        # B. Generate OTP & Simpan ke database
         otp = str(random.randint(100000, 999999))
         cur.execute(
             "INSERT INTO users(username, password, is_verified, otp) VALUES(%s,%s,%s,%s)",
             (username, password, 0, otp)
         )
         
-        # 3. Commit data ke database TERLEBIH DAHULU agar data aman tersimpan
+        # C. Commit database terlebih dahulu agar data aman
         mysql.connection.commit()
-        print("LOG: Data user berhasil di-insert dan di-commit.")
+        print("LOG: Data user berhasil disimpan ke database.")
 
-        # 4. Siapkan format Email
-        msg = Message(
-            'Kode Verifikasi OTP - Sehat App',
-            sender=app.config['MAIL_USERNAME'],
-            recipients=[username]  # Pastikan input 'username' saat daftar adalah email aktif (contoh: riyannewskull@gmail.com)
-        )
-        msg.html = f"""
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 12px; background-color: #ffffff;">
-            <div style="text-align: center; margin-bottom: 20px;">
-                <h1 style="color: #2196F3; margin: 0;">Sehat App</h1>
-                <p style="color: #666; margin: 5px 0 0 0;">Verifikasi Akun Anda</p>
-            </div>
-            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-            <p>Halo,</p>
-            <p>Terima kasih telah mendaftar di Sehat App. Silakan gunakan kode OTP di bawah ini untuk menyelesaikan pendaftaran Anda:</p>
-            <div style="text-align: center; margin: 30px 0; padding: 15px; background-color: #f0f6ff; border-radius: 8px;">
-                <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #1a237e;">{otp}</span>
-            </div>
-            <p style="color: #555; font-size: 14px;">Kode OTP ini bersifat rahasia. Jangan bagikan kode ini kepada siapa pun.</p>
-            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-            <p style="color: #999; font-size: 12px; text-align: center; margin: 0;">Ini adalah email otomatis, mohon tidak membalas email ini.</p>
-        </div>
-        """
-        
-        # 5. Kirim langsung secara sinkronus agar kita bisa menangkap detail error jika gagal
-        print(f"LOG: Mencoba mengirim email ke {username}...")
-        mail.send(msg)
-        print("LOG: Email OTP berhasil terkirim secara synchronous!")
+        # D. Proses pengiriman email lewat Brevo HTTP API
+        api_key = os.getenv("BREVO_API_KEY")
+        sender_email = os.getenv("MAIL_USERNAME") # Email pribadumu yang kamu daftarkan di Railway & Brevo
+
+        if api_key and sender_email:
+            url = "https://api.brevo.com/v3/smtp/email"
+            headers = {
+                "accept": "application/json",
+                "api-key": api_key,
+                "content-type": "application/json"
+            }
+            payload = {
+                "sender": {"name": "Sehat App", "email": sender_email},
+                "to": [{"email": username}],
+                "subject": "Kode Verifikasi OTP - Sehat App",
+                "htmlContent": f"""
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 12px; background-color: #ffffff;">
+                    <div style="text-align: center; margin-bottom: 20px;">
+                        <h1 style="color: #2196F3; margin: 0;">Sehat App</h1>
+                        <p style="color: #666; margin: 5px 0 0 0;">Verifikasi Akun Anda</p>
+                    </div>
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+                    <p>Halo,</p>
+                    <p>Terima kasih telah mendaftar di Sehat App. Silakan gunakan kode OTP di bawah ini untuk menyelesaikan pendaftaran Anda:</p>
+                    <div style="text-align: center; margin: 30px 0; padding: 15px; background-color: #f0f6ff; border-radius: 8px;">
+                        <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #1a237e;">{otp}</span>
+                    </div>
+                    <p style="color: #555; font-size: 14px;">Kode OTP ini bersifat rahasia. Jangan bagikan kode ini kepada siapa pun.</p>
+                </div>
+                """
+            }
+            
+            print(f"LOG: Mengirim email OTP ke {username}...")
+            response = requests.post(url, json=payload, headers=headers)
+            
+            if response.status_code in [200, 201]:
+                print("LOG: Email OTP sukses terkirim lewat Brevo!")
+            else:
+                print(f"LOG ERROR: Brevo gagal mengirim. Status: {response.status_code}, Detail: {response.text}")
+        else:
+            print("LOG ERROR: Variabel BREVO_API_KEY atau MAIL_USERNAME belum terisi di Railway.")
 
         return jsonify({"success": True, "message": "Register berhasil, silakan cek email Anda untuk kode OTP."}), 201
 
     except Exception as e:
         mysql.connection.rollback()
-        print(f"LOG ERROR: Terjadi kegagalan registrasi atau pengiriman email: {e}")
-        # Kembalikan detail error agar kamu bisa melihat langsung pesan error aslinya dari Postman/aplikasi
-        return jsonify({
-            "success": False, 
-            "message": f"Terjadi kesalahan saat mengirim email: {str(e)}"
-        }), 500
+        print(f"LOG ERROR: Terjadi kegagalan registrasi: {e}")
+        return jsonify({"success": False, "message": "Terjadi kesalahan internal pada server"}), 500
         
     finally:
         cur.close()

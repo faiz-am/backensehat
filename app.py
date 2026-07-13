@@ -3,6 +3,7 @@ from flask_mysqldb import MySQL
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 import os
+import json
 import random
 from dotenv import load_dotenv
 from flask_jwt_extended import (
@@ -85,17 +86,18 @@ mysql.init_app(app)
 # FIREBASE CONFIG
 # =========================
 try:
-    # PERBAIKAN: Cek apakah daftar aplikasi Firebase (_apps) masih kosong
     if not firebase_admin._apps:
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
-        firebase_path = os.path.join(backend_dir, "firebase.json")
-        cred = credentials.Certificate(firebase_path)
-        firebase_admin.initialize_app(cred)
-        print("Firebase berhasil diinisialisasi!")
-except Exception as e:
-    path_val = firebase_path if 'firebase_path' in locals() else 'None'
-    print(f"Firebase error (path={path_val}): {e}")
+        firebase_credentials = os.getenv("FIREBASE_CREDENTIALS")
 
+        if firebase_credentials:
+            cred_dict = json.loads(firebase_credentials)
+            cred = credentials.Certificate(cred_dict)
+            firebase_admin.initialize_app(cred)
+            print("Firebase berhasil diinisialisasi!")
+        else:
+            print("FIREBASE_CREDENTIALS tidak ditemukan.")
+except Exception as e:
+    print(f"Firebase error: {e}")
 # =========================
 # ROOT API
 # =========================

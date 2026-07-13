@@ -208,7 +208,7 @@ def send_async_email(flask_app, msg):
         except Exception as e:
             print(f"LOG ERROR: Gagal mengirim email OTP di background: {e}")
 # =========================
-# REGISTER API
+# REGISTER API (SINKRONUS UNTUK TESTING ERROR EMAIL)
 # =========================
 @app.route('/api/register', methods=['POST'])
 def register():
@@ -246,7 +246,7 @@ def register():
         msg = Message(
             'Kode Verifikasi OTP - Sehat App',
             sender=app.config['MAIL_USERNAME'],
-            recipients=[username]
+            recipients=[username]  # Pastikan input 'username' saat daftar adalah email aktif (contoh: riyannewskull@gmail.com)
         )
         msg.html = f"""
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 12px; background-color: #ffffff;">
@@ -266,15 +266,21 @@ def register():
         </div>
         """
         
-        # 5. Jalankan pengiriman email via Thread agar tidak memicu timeout Gunicorn
-        Thread(target=send_async_email, args=(app, msg)).start()
+        # 5. Kirim langsung secara sinkronus agar kita bisa menangkap detail error jika gagal
+        print(f"LOG: Mencoba mengirim email ke {username}...")
+        mail.send(msg)
+        print("LOG: Email OTP berhasil terkirim secara synchronous!")
 
         return jsonify({"success": True, "message": "Register berhasil, silakan cek email Anda untuk kode OTP."}), 201
 
     except Exception as e:
         mysql.connection.rollback()
-        print(f"LOG ERROR: Terjadi kegagalan registrasi: {e}")
-        return jsonify({"success": False, "message": "Terjadi kesalahan internal pada server"}), 500
+        print(f"LOG ERROR: Terjadi kegagalan registrasi atau pengiriman email: {e}")
+        # Kembalikan detail error agar kamu bisa melihat langsung pesan error aslinya dari Postman/aplikasi
+        return jsonify({
+            "success": False, 
+            "message": f"Terjadi kesalahan saat mengirim email: {str(e)}"
+        }), 500
         
     finally:
         cur.close()

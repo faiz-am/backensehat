@@ -123,12 +123,12 @@ def proses_rekomendasi():
     siang_raw = data.get('gizi_siang', {})
     malam_raw = data.get('gizi_malam', {})
     
-    # PERBAIKAN UTAMA: Ekstrak sub-objek 'data' jika Flutter mengirimkan seluruh response mentah API
+    # Ekstrak sub-objek 'data' jika Flutter mengirimkan seluruh response mentah API
     pagi = pagi_raw.get('data', pagi_raw) if isinstance(pagi_raw, dict) else {}
     siang = siang_raw.get('data', siang_raw) if isinstance(siang_raw, dict) else {}
     malam = malam_raw.get('data', malam_raw) if isinstance(malam_raw, dict) else {}
     
-    aktivitas = data.get('aktivitas', 'Ringan')
+    aktivitas = data.get('aktivitas', 'Ringan').lower()
     penyakit = data.get('penyakit', 'Tidak ada')
 
     # Fungsi pembantu untuk mengonversi ke float secara aman
@@ -136,9 +136,7 @@ def proses_rekomendasi():
         if not obj: return 0.0
         return float(obj.get(key, 0) if obj.get(key) is not None else 0.0)
 
-    # ====================================================
-    # PERBAIKAN HITUNG TOTAL AKUMULASI GIZI SEHARIAN
-    # ====================================================
+    # Akumulasi Gizi Seharian
     total_kalori       = get_val(pagi, 'total_kalori') + get_val(siang, 'total_kalori') + get_val(malam, 'total_kalori')
     total_protein      = get_val(pagi, 'total_protein') + get_val(siang, 'total_protein') + get_val(malam, 'total_protein')
     total_karbohidrat  = get_val(pagi, 'total_karbohidrat') + get_val(siang, 'total_karbohidrat') + get_val(malam, 'total_karbohidrat')
@@ -146,62 +144,114 @@ def proses_rekomendasi():
     total_gula         = get_val(pagi, 'total_gula') + get_val(siang, 'total_gula') + get_val(malam, 'total_gula')
     total_sodium       = get_val(pagi, 'total_sodium') + get_val(siang, 'total_sodium') + get_val(malam, 'total_sodium')
 
-    # Logika pembuatan saran berdasarkan kondisi kesehatan
     saran = []
     status_kondisi = "Normal"
+    potongan_skor = 0
 
+    # =========================================================================
+    # 1. STANDAR MEDIS DIABETES MELLITUS (Referensi: PERKENI & WHO)
+    # =========================================================================
     if penyakit == "Diabetes":
         gula_darah = float(data.get('gula_darah', 0) if data.get('gula_darah') else 0)
-        if gula_darah > 200 or total_gula > 50:
-            saran.append("⚠️ Kadar gula darah atau konsumsi gula harianmu terlalu tinggi! Hindari makanan manis malam ini dan perbanyak minum air putih.")
+        # WHO: Batas aman konsumsi gula tambahan maksimal 10% dari total energi (setara ~50g/hari)
+        # PERKENI: Gula Darah Sewaktu (GDS) >= 200 mg/dL mengindikasikan Hiperglikemia tidak terkontrol
+        if gula_darah >= 200 or total_gula > 50:
+            saran.append("⚠️ [Bahaya Medis] Kadar gula darah atau konsumsi gula harian Anda melebihi batas aman klinis (WHO maks 50g/hari). Hindari karbohidrat sederhana, makanan manis, dan segera pantau kondisi Anda.")
             status_kondisi = "Bahaya"
+            potongan_skor += 40
+        elif 140 <= gula_darah < 200 or 25 < total_gula <= 50:
+            saran.append("⚠️ [Peringatan] Kadar gula darah atau konsumsi gula harian Anda memasuki ambang batas atas (Pre-Diabetes). Kurangi porsi makanan manis malam ini.")
+            status_kondisi = "Peringatan"
+            potongan_skor += 20
         else:
-            saran.append("👍 Konsumsi gula harianmu cukup terjaga. Pertahankan!")
+            saran.append("👍 Sangat baik. Kadar gula darah dan konsumsi gula harian Anda terkontrol dengan aman di bawah batas rekomendasi klinis.")
 
+    # =========================================================================
+    # 2. STANDAR MEDIS HIPERTENSI (Referensi: AHA / JNC 8 / WHO)
+    # =========================================================================
     elif penyakit == "Hipertensi":
         sistolik = float(data.get('sistolik', 0) if data.get('sistolik') else 0)
         diastolik = float(data.get('diastolik', 0) if data.get('diastolik') else 0)
+        # AHA/WHO: Konsumsi Natrium (Sodium) maksimal 2000 mg/hari (setara 1 sendok teh garam)
+        # JNC 8: Hipertensi Derajat 2 didefinisikan jika Sistolik >= 140 atau Diastolik >= 90 mmHg
         if sistolik >= 140 or diastolik >= 90 or total_sodium > 2000:
-            saran.append("⚠️ Tekanan darah atau kadar sodium (garam) makananmu tinggi! Batasi makanan asin, mie instan, atau bumbu penyedap berlebih.")
+            saran.append(f"⚠️ [Bahaya Medis] Tekanan darah ({int(sistolik)}/{int(diastolik)} mmHg) atau asupan sodium ({round(total_sodium)} mg) terlalu tinggi. Batasi makanan asin, saus, penyedap rasa (MSG), dan mie instan untuk meminimalkan risiko krisis kardiovaskular.")
             status_kondisi = "Bahaya"
+            potongan_skor += 40
+        elif (120 <= sistolik < 140) or (80 <= diastolik < 90) or (1500 < total_sodium <= 2000):
+            saran.append("⚠️ [Peringatan] Tekanan darah atau asupan sodium harian Anda berada di kategori Pre-Hipertensi. Batasi penggunaan garam dapur pada menu berikutnya.")
+            status_kondisi = "Peringatan"
+            potongan_skor += 20
         else:
-            saran.append("👍 Tekanan darah harian terpantau aman dan sodium terkontrol.")
+            saran.append("👍 Kondisi stabil. Tekanan darah Anda terpantau aman dan asupan natrium harian Anda terkontrol di bawah ambang batas bahaya.")
 
+    # =========================================================================
+    # 3. STANDAR MEDIS OBESITAS & DEFISIT KALORI (Referensi: Kemenkes RI & Harris-Benedict)
+    # =========================================================================
     elif penyakit == "Obesitas":
         berat = float(data.get('berat', 0) if data.get('berat') else 0)
         tinggi = float(data.get('tinggi', 160) if data.get('tinggi') else 160)
-        tinggi_m = tinggi / 100  # Ubah cm ke meter
+        umur = float(data.get('umur', 25) if data.get('umur') else 25)
+        gender = str(data.get('gender', 'pria')).lower()
         
-        batas_kalori = 2000 if aktivitas == "Sedang" else (2400 if aktivitas == "Berat" else 1600)
+        # Menghitung BMR (Basal Metabolic Rate) menggunakan rumus standar medis Harris-Benedict
+        if gender == 'wanita':
+            bmr = 655 + (9.6 * berat) + (1.8 * tinggi) - (4.7 * umur)
+        else:
+            bmr = 66 + (13.7 * berat) + (5 * tinggi) - (6.8 * umur)
+            
+        # Menentukan faktor pengali aktivitas fisik klinis
+        if aktivitas == "berat":
+            faktor_aktif = 1.725
+        elif aktivitas == "sedang":
+            faktor_aktif = 1.55
+        else:
+            faktor_aktif = 1.2  # Ringan / Sedenter
+            
+        # Total Daily Energy Expenditure (TDEE) / Total energi keluar harian
+        tdee = bmr * faktor_aktif
+        # Standar tata laksana gizi obesitas Kemenkes RI: Defisit energi yang aman adalah TDEE dikurangi 500 kcal
+        target_kalori_diet = round(tdee - 500)
         
-        if total_kalori > batas_kalori:
-            saran.append(f"⚠️ Total kalori ({round(total_kalori)} kcal) sudah melebihi batas anjuran aktivitas {aktivitas} ({batas_kalori} kcal). Kurangi porsi makan malam/cemilan.")
+        if total_kalori > target_kalori_diet:
+            saran.append(f"⚠️ [Bahaya] Konsumsi kalori harian Anda ({round(total_kalori)} kcal) melebihi target defisit kalori klinis Anda ({target_kalori_diet} kcal). Kurangi porsi makan malam atau cemilan.")
             status_kondisi = "Bahaya"
+            potongan_skor += 40
+        elif (target_kalori_diet - 250) <= total_kalori <= target_kalori_diet:
+            saran.append(f"👍 Luar biasa! Asupan kalori Anda hari ini sangat konsisten dan sesuai dengan target batas aman defisit kalori ({target_kalori_diet} kcal).")
         else:
-            saran.append("👍 Asupan kalori teratur dan sesuai dengan target defisit kalori Anda.")
-    
+            saran.append(f"⚠️ [Peringatan] Kalori harian Anda terlalu rendah di bawah target diet ({target_kalori_diet} kcal). Pastikan kebutuhan nutrisi minimum tercapai agar metabolisme tidak melambat.")
+            status_kondisi = "Peringatan"
+            potongan_skor += 15
+
+    # =========================================================================
+    # 4. KONDISI UMUM / NON-PENYAKIT (Referensi: AKG Kemenkes RI)
+    # =========================================================================
     else:
-        if total_kalori > 2200:
-            saran.append("Kalori harianmu agak tinggi hari ini, imbangi dengan olahraga ringan ya!")
+        # Standar umum Angka Kecukupan Gizi (AKG) Indonesia rata-rata sebesar 2100 - 2300 kcal
+        if total_kalori > 2300:
+            saran.append(f"⚠️ Total kalori harian Anda ({round(total_kalori)} kcal) melebihi batas rata-rata AKG nasional (2100-2300 kcal). Seimbangkan dengan aktivitas fisik malam ini.")
+            status_kondisi = "Peringatan"
+            potongan_skor += 15
+        elif 0 < total_kalori < 1200:
+            saran.append("⚠️ Asupan kalori seharian Anda sangat minim (di bawah 1200 kcal). Kondisi ini kurang ideal untuk memenuhi kebutuhan metabolisme dasar tubuh.")
+            status_kondisi = "Peringatan"
+            potongan_skor += 15
         else:
-            saran.append("Pola makan harianmu hari ini sudah cukup seimbang dan sehat! Selalu pertahankan real-food.")
+            saran.append("👍 Pola makan Anda hari ini sangat baik! Kebutuhan makronutrisi harian Anda seimbang dan berada dalam batas normal AKG.")
+
+    # =========================================================================
+    # KALKULASI SKOR KESEHATAN SEARA PROPORSIONAL
+    # =========================================================================
+    # Tambahan penalti skor jika parameter zat gizi spesifik melanggar batas aman umum
+    if total_gula > 50 and penyakit != "Diabetes":
+        potongan_skor += 15
+    if total_sodium > 2000 and penyakit != "Hipertensi":
+        potongan_skor += 15
+        
+    skor_akhir = max(10, min(100, 100 - potongan_skor))
 
     saran_text = " ".join(saran)
-
-    # Hitung Skor Kesehatan (0 - 100) secara dinamis
-    skor = 100
-    if status_kondisi == "Bahaya":
-        skor -= 40
-    else:
-        if total_kalori > 2200:
-            skor -= 10
-        elif total_kalori < 1000 and total_kalori > 0:
-            skor -= 10
-        if total_gula > 50:
-            skor -= 10
-        if total_sodium > 2000:
-            skor -= 10
-    skor = max(10, min(100, skor))
 
     return jsonify({
         "success": True,
@@ -214,7 +264,7 @@ def proses_rekomendasi():
             "total_sodium": round(total_sodium, 2),
             "status_kondisi": status_kondisi,
             "saran": saran_text,
-            "skor": skor
+            "skor": skor_akhir
         }
     }), 200
 

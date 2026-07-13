@@ -104,6 +104,95 @@ def root():
     return jsonify({"message": "api aktif", "status": "running"}), 200
 
 # =========================
+# PROFILE API (TANPA JWT - Sesuai dengan Flutter kamu saat ini)
+# =========================
+@app.route('/api/ambil-profil', methods=['GET'])
+def ambil_profil():
+    username = request.args.get('username', '').strip()
+    
+    if not username:
+        return jsonify({"success": False, "message": "Username diperlukan"}), 400
+
+    try:
+        cur = mysql.connection.cursor()
+        cur.execute("SELECT id, username, nama, telepon, umur, tinggi, berat FROM users WHERE username = %s", (username,))
+        user = cur.fetchone()
+        cur.close()
+
+        if not user:
+            return jsonify({"success": False, "message": "User tidak ditemukan"}), 404
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "id": user[0],
+                "username": user[1],
+                "nama": user[2] if user[2] else "",
+                "telepon": user[3] if user[3] else "",
+                "umur": user[4] if user[4] else "",
+                "tinggi": user[5] if user[5] else "",
+                "berat": user[6] if user[6] else ""
+            }
+        }), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route('/api/update-profil', methods=['POST'])
+def update_profil():
+    data = request.get_json()
+    
+    username = data.get('username', '').strip()
+    nama = data.get('nama', '').strip()
+    telepon = data.get('telepon', '').strip()
+    umur = data.get('umur', 0)
+    tinggi = data.get('tinggi', 0.0)
+    berat = data.get('berat', 0.0)
+
+    if not username:
+        return jsonify({"success": False, "message": "Username tidak boleh kosong"}), 400
+
+    try:
+        cur = mysql.connection.cursor()
+        cur.execute("""
+            UPDATE users 
+            SET nama = %s, telepon = %s, umur = %s, tinggi = %s, berat = %s 
+            WHERE username = %s
+        """, (nama, telepon, umur, tinggi, berat, username))
+        
+        mysql.connection.commit()
+        cur.close()
+        
+        return jsonify({"success": True, "message": "Profil berhasil diperbarui di database!"}), 200
+    except Exception as e:
+        mysql.connection.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+
+# Tambahkan di bagian bawah app.py
+@app.route('/api/status-kesehatan', methods=['GET'])
+def get_status_kesehatan():
+    username = request.args.get('username')
+    cur = mysql.connection.cursor()
+    cur.execute("SELECT tinggi, berat FROM users WHERE username = %s", (username,))
+    user = cur.fetchone()
+    cur.close()
+
+    if not user or not user[0]: return jsonify({"status": "Normal", "target_kalori": 2000}), 200
+        
+    tinggi_m = user[0] / 100
+    berat = user[1]
+    
+    # Perhitungan BMI (Sumber: World Health Organization - BMI Classification)
+    bmi = berat / (tinggi_m * tinggi_m)
+    
+    # Logika Medis: Obesitas jika BMI >= 27
+    if bmi >= 27:
+        return jsonify({"status": "Obesitas", "target_kalori": 1600}), 200
+    elif bmi < 18.5:
+        return jsonify({"status": "Kurang Gizi", "target_kalori": 2200}), 200
+    else:
+        return jsonify({"status": "Normal", "target_kalori": 2000}), 200
+
+# =========================
 # REGISTER API
 # =========================
 @app.route('/api/register', methods=['POST'])
@@ -624,5 +713,9 @@ def get_bigdata_analytics():
 # =========================
 # RUN
 # =========================
+import os
+
 if __name__ == '__main__':
-    app.run(debug=True)
+    # Membaca port default dari server hosting, jika tidak ada baru gunakan 5000
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)

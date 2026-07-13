@@ -60,6 +60,9 @@ app.config['MAIL_PASSWORD'] = os.getenv("MAIL_PASSWORD")
 app.config['MAIL_USE_TLS'] = False
 app.config['MAIL_USE_SSL'] = True
 mail = Mail(app)
+print("MAIL_SERVER =", app.config["MAIL_SERVER"])
+print("MAIL_PORT =", app.config["MAIL_PORT"])
+print("MAIL_USERNAME =", app.config["MAIL_USERNAME"])
 
 # =========================
 # MYSQL CONFIG
@@ -221,42 +224,54 @@ def register():
     otp = str(random.randint(100000, 999999))
 
     try:
+        print("1. Mulai register")
+
         cur.execute(
             "INSERT INTO users(username, password, is_verified, otp) VALUES(%s,%s,%s,%s)",
             (username, password, 0, otp)
         )
+        print("2. INSERT berhasil")
+
         msg = Message(
             'Kode Verifikasi OTP - Sehat App',
             sender=app.config['MAIL_USERNAME'],
             recipients=[username]
         )
+
+        # Pakai HTML kamu yang panjang juga boleh
         msg.html = f"""
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 12px; background-color: #ffffff;">
-            <div style="text-align: center; margin-bottom: 20px;">
-                <h1 style="color: #2196F3; margin: 0;">Sehat App</h1>
-                <p style="color: #666; margin: 5px 0 0 0;">Verifikasi Akun Anda</p>
-            </div>
-            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-            <p>Halo,</p>
-            <p>Terima kasih telah mendaftar di Sehat App. Silakan gunakan kode OTP di bawah ini untuk menyelesaikan pendaftaran Anda:</p>
-            <div style="text-align: center; margin: 30px 0; padding: 15px; background-color: #f0f6ff; border-radius: 8px;">
-                <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #1a237e;">{otp}</span>
-            </div>
-            <p style="color: #555; font-size: 14px;">Kode OTP ini bersifat rahasia. Jangan bagikan kode ini kepada siapa pun.</p>
-            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-            <p style="color: #999; font-size: 12px; text-align: center; margin: 0;">Ini adalah email otomatis, mohon tidak membalas email ini.</p>
+        <div style="font-family: Arial, sans-serif;">
+            <h2>Sehat App</h2>
+            <p>Kode OTP Anda:</p>
+            <h1>{otp}</h1>
         </div>
         """
+
+        print("3. Sebelum mail.send()")
+
         mail.send(msg)
+
+        print("4. Sesudah mail.send()")
+
         mysql.connection.commit()
+
+        print("5. Commit berhasil")
+
     except Exception as e:
         mysql.connection.rollback()
-        print(f"Error mengirim email OTP atau menyimpan user: {e}")
-        return jsonify({"success": False, "message": f"Gagal mengirim email OTP: {str(e)}"}), 500
+        print("ERROR:", repr(e))
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
     finally:
         cur.close()
 
-    return jsonify({"success": True, "message": "Register berhasil, silakan cek email Anda untuk kode OTP."})
+    return jsonify({
+        "success": True,
+        "message": "Register berhasil, silakan cek email Anda untuk kode OTP."
+    })
 
 # =========================
 # VERIFY OTP API

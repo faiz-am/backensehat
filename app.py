@@ -693,6 +693,69 @@ def chat():
 # =========================
 # BIG DATA ANALYTICS API
 # =========================
+# =========================================================================
+# ROUTE 1: ANALYTICS - Untuk grafik Bar Chart & Pie Chart data eksternal
+# =========================================================================
+@app.route('/api/bigdata/analytics', methods=['GET'])
+def get_bigdata_analytics():
+    try:
+        cur = mysql.connection.cursor()
+        
+        # 1. Total foods & Health category counts
+        cur.execute("SELECT health_status, COUNT(*) FROM big_data_analysis GROUP BY health_status")
+        rows = cur.fetchall()
+        summary = {
+            "total_foods": 0,
+            "healthy_count": 0,
+            "less_healthy_count": 0,
+            "avg_calories": 0.0,
+            "avg_protein": 0.0,
+            "avg_fat": 0.0,
+            "avg_carbs": 0.0
+        }
+        for r in rows:
+            status = r[0]
+            count = int(r[1])
+            summary["total_foods"] += count
+            if status == "Healthy":
+                summary["healthy_count"] = count
+            elif status == "Less Healthy":
+                summary["less_healthy_count"] = count
+
+        # 2. Averages of nutrients
+        cur.execute("SELECT AVG(calories), AVG(protein_g), AVG(fat_total_g), AVG(carbs_g) FROM big_data_analysis")
+        avg_row = cur.fetchone()
+        if avg_row and summary["total_foods"] > 0:
+            summary["avg_calories"] = round(float(avg_row[0]) if avg_row[0] is not None else 0.0, 2)
+            summary["avg_protein"] = round(float(avg_row[1]) if avg_row[1] is not None else 0.0, 2)
+            summary["avg_fat"] = round(float(avg_row[2]) if avg_row[2] is not None else 0.0, 2)
+            summary["avg_carbs"] = round(float(avg_row[3]) if avg_row[3] is not None else 0.0, 2)
+
+        # 3. Top 5 foods by calories
+        cur.execute("SELECT name, calories FROM big_data_analysis ORDER BY calories DESC LIMIT 5")
+        cal_rows = cur.fetchall()
+        top_calories = [{"name": r[0], "calories": float(r[1])} for r in cal_rows]
+
+        # 4. Top 5 foods by protein
+        cur.execute("SELECT name, protein_g FROM big_data_analysis ORDER BY protein_g DESC LIMIT 5")
+        prot_rows = cur.fetchall()
+        top_protein = [{"name": r[0], "protein": float(r[1])} for r in prot_rows]
+
+        cur.close()
+        return jsonify({
+            "success": True,
+            "summary": summary,
+            "top_calories": top_calories,
+            "top_protein": top_protein
+        }), 200
+    except Exception as e:
+        print(f"Error getting big data analytics: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+# =========================================================================
+# ROUTE 2: FOODS - Untuk bagian Eksplorasi FatSecret Big Data (pencarian)
+# =========================================================================
 @app.route('/api/bigdata/foods', methods=['GET'])
 def get_bigdata_foods():
     try:
@@ -700,11 +763,9 @@ def get_bigdata_foods():
         cur = mysql.connection.cursor()
         
         if search:
-            # Cari makanan berdasarkan nama
             query = "SELECT name, calories, protein_g, fat_total_g, carbs_g, health_status FROM big_data_analysis WHERE name LIKE %s LIMIT 50"
             cur.execute(query, (f"%{search}%",))
         else:
-            # Jika tidak ada pencarian, ambil sampel 50 makanan pertama
             query = "SELECT name, calories, protein_g, fat_total_g, carbs_g, health_status FROM big_data_analysis LIMIT 50"
             cur.execute(query)
             
@@ -728,7 +789,6 @@ def get_bigdata_foods():
     except Exception as e:
         print(f"Error getting big data foods: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
-
 # =========================
 # RUN
 # =========================

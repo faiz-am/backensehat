@@ -1,6 +1,10 @@
 from flask import Blueprint, request, jsonify, current_app
 import os
 import json
+import numpy as np
+from PIL import Image
+from flask import Blueprint, request, jsonify
+import onnxruntime as ort
 
 makanan_bp = Blueprint('makanan_api', __name__)
 
@@ -544,43 +548,34 @@ def load_dataset_signatures():
     except Exception as e:
         print(f"Could not load dataset signatures: {e}")
     return None, None
-
+_onnx_session = None
 def get_onnx_session():
     global _onnx_session
     if _onnx_session is not None:
         return _onnx_session
     try:
-        import onnxruntime as ort
         backend_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Cari file model_makanan.onnx di folder luar (root) atau folder backend
         model_path = os.path.join(os.path.dirname(backend_dir), "model_makanan.onnx")
         if not os.path.exists(model_path):
             model_path = os.path.join(backend_dir, "model_makanan.onnx")
+            
         if os.path.exists(model_path):
             _onnx_session = ort.InferenceSession(model_path)
-            print(f"ONNX model loaded successfully from: {model_path}")
+            print(f"LOG SUCCESS: ONNX model loaded successfully from: {model_path}")
             return _onnx_session
+        else:
+            print(f"LOG ERROR: File model_makanan.onnx tidak ditemukan di {model_path}")
     except Exception as e:
-        print(f"Could not load ONNX model: {e}")
+        print(f"LOG ERROR: Could not load ONNX model: {e}")
     return None
 
-def get_keras_model():
-    global _keras_model
-    if _keras_model is not None:
-        return _keras_model
-    try:
-        from tensorflow.keras.models import load_model
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
-        model_path = os.path.join(os.path.dirname(backend_dir), "model_makanan.keras")
-        if not os.path.exists(model_path):
-            model_path = os.path.join(backend_dir, "model_makanan.keras")
-        if os.path.exists(model_path):
-            _keras_model = load_model(model_path, compile=False)
-            print(f"Keras model loaded successfully from: {model_path}")
-            return _keras_model
-    except Exception as e:
-        print(f"Could not load Keras model: {e}")
-    return None
+# CATATAN: Fungsi get_keras_model() dihapus total agar tidak memicu import tensorflow!
 
+# ==========================================
+# ROUTE PREDICT MAKANAN
+# ==========================================
 @makanan_bp.route('/predict-makanan', methods=['POST'])
 def predict_makanan():
     if 'image' not in request.files:
@@ -590,7 +585,6 @@ def predict_makanan():
     if file.filename == '':
         return jsonify({"success": False, "message": "No selected file"}), 400
         
-    # Class names from model training
     class_names = [
         "Ayam Goreng",
         "Burger",
@@ -604,55 +598,45 @@ def predict_makanan():
         "Rawon"
     ]
     
-    # Mapping for DB names
     name_mapping = {
         "French Fries": "Kentang Goreng",
         "Gado-Gado": "Gado Gado"
     }
 
-    # 1. Try Dataset Signature Matching (100% accurate for dataset images)
+    # 1. STRATEGI 1: Dataset Signature Matching (100% akurat untuk gambar dataset asli)
     try:
         dataset_sigs, dataset_labs = load_dataset_signatures()
         if dataset_sigs is not None:
-            from PIL import Image
-            import numpy as np
-            
-            # Get query signature
             file.stream.seek(0)
             img = Image.open(file.stream)
             img_resized = img.convert("RGB").resize((16, 16), Image.Resampling.BILINEAR)
             query_sig = np.array(list(img_resized.tobytes()), dtype=np.int32)
             
-            # Find nearest neighbor
             diff = dataset_sigs - query_sig
             dist = np.sum(diff ** 2, axis=1)
             nearest_idx = np.argmin(dist)
             min_dist = dist[nearest_idx]
             
-            # Map distance to confidence
             max_possible_diff = 16 * 16 * 3 * 255 * 255
             confidence = round(100 - (min_dist / max_possible_diff) * 100, 2)
             
             predicted_raw = dataset_labs[nearest_idx]
             predicted_food = name_mapping.get(predicted_raw, predicted_raw)
             
-            print(f"Prediction using dataset matching: {predicted_food} (distance: {min_dist}, confidence: {confidence:.2f}%)")
-            return jsonify({
-                "success": True,
-                "predicted_food": predicted_food,
-                "confidence": round(confidence, 2)
-            }), 200
+            if confidence > 95.0:  # Batasan kecocokan signature
+                print(f"Prediction using dataset matching: {predicted_food} (confidence: {confidence:.2f}%)")
+                return jsonify({
+                    "success": True,
+                    "predicted_food": predicted_food,
+                    "confidence": round(confidence, 2)
+                }), 200
     except Exception as ds_err:
         print(f"Dataset matching skipped/failed: {ds_err}")
 
-    # 2. Try Local ONNX Model (.onnx)
+    # 2. STRATEGI 2: Jalankan Model Lokal ONNX (.onnx) - Ringan & Hemat RAM
     try:
         session = get_onnx_session()
         if session is not None:
-            from PIL import Image
-            import numpy as np
-            
-            # Reset stream
             file.stream.seek(0)
             img = Image.open(file.stream).convert("RGB").resize((224, 224))
             img_array = np.array(img, dtype=np.float32) / 255.0
@@ -674,40 +658,11 @@ def predict_makanan():
     except Exception as onnx_err:
         print(f"ONNX prediction skipped/failed: {onnx_err}")
 
-    # 2. Try Local Keras Model (.keras)
-    try:
-        model = get_keras_model()
-        if model is not None:
-            from PIL import Image
-            import numpy as np
-            
-            # Reset stream
-            file.stream.seek(0)
-            img = Image.open(file.stream).convert("RGB").resize((224, 224))
-            img_array = np.array(img) / 255.0
-            img_array = np.expand_dims(img_array, axis=0)
-            
-            pred = model.predict(img_array)
-            class_idx = np.argmax(pred)
-            confidence = float(pred[0][class_idx] * 100)
-            predicted_raw = class_names[class_idx]
-            predicted_food = name_mapping.get(predicted_raw, predicted_raw)
-            
-            print(f"Prediction using Keras model: {predicted_food} (confidence: {confidence:.2f}%)")
-            return jsonify({
-                "success": True,
-                "predicted_food": predicted_food,
-                "confidence": round(confidence, 2)
-            }), 200
-    except Exception as keras_err:
-        print(f"Keras prediction skipped/failed: {keras_err}")
-
-    # 3. Try Gemini API
+    # 3. STRATEGI 3: Fallback ke Gemini API jika model lokal gagal
     gemini_key = os.getenv("GEMINI_API_KEY")
     if gemini_key and gemini_key != "your_gemini_api_key_here":
         try:
             import google.generativeai as genai
-            from PIL import Image
             genai.configure(api_key=gemini_key)
             
             file.stream.seek(0)
@@ -724,7 +679,6 @@ def predict_makanan():
             response = model.generate_content([prompt, img])
             predicted_resp = response.text.strip()
             
-            # Match response with our food list
             matched_food = None
             for food in ["Ayam Goreng", "Burger", "Kentang Goreng", "Gado Gado", "Ikan Goreng", "Mie Goreng", "Nasi Goreng", "Nasi Padang", "Pizza", "Rawon"]:
                 if food.lower() in predicted_resp.lower():
@@ -741,9 +695,8 @@ def predict_makanan():
         except Exception as gemini_err:
             print(f"Gemini API prediction failed: {gemini_err}")
 
-    # 4. Fallback to Image Signature (Euclidean distance)
+    # 4. STRATEGI 4: Fallback ke Signature Euclidean Distance (Pilihan terakhir jika offline)
     try:
-        from PIL import Image
         file.stream.seek(0)
         img = Image.open(file.stream)
         img_resized = img.convert("RGB").resize((16, 16), Image.Resampling.BILINEAR)
@@ -751,7 +704,7 @@ def predict_makanan():
         
         best_match = "Ayam Goreng"
         min_diff = float("inf")
-        if REF_SIGNATURES:
+        if 'REF_SIGNATURES' in globals() and REF_SIGNATURES:
             for food, ref_sig in REF_SIGNATURES.items():
                 if len(sig) == len(ref_sig):
                     diff = sum((x - y) ** 2 for x, y in zip(sig, ref_sig))
